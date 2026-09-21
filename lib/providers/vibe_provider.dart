@@ -35,6 +35,9 @@ class VibeProvider extends ChangeNotifier {
   String? get toastMessage => _toastMessage;
   VibeConfig get config => _service.config;
 
+  /// In ShreyX Vibe, only host can control playback & queue. Members can only view & suggest.
+  bool get canControlPlayback => !isInRoom || isHost;
+
   VibeProvider({required ShrexAudioHandler audioHandler}) : _audioHandler = audioHandler {
     _init();
   }

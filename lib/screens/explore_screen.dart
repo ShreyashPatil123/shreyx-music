@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/stem.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_provider.dart';
+import '../providers/vibe_provider.dart';
 import '../services/link_resolver_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/link_import_sheet.dart';
@@ -227,7 +229,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       final stem = search.searchResults[idx];
                       return TrackRow(
                         stem: stem,
-                        onTap: () => context.read<PlayerProvider>().playWithRadio(stem),
+                        onTap: () {
+                          final vibe = context.read<VibeProvider>();
+                          if (vibe.isInRoom && !vibe.isHost) {
+                            _showMemberSongAction(context, stem, vibe);
+                          } else {
+                            context.read<PlayerProvider>().playWithRadio(stem);
+                          }
+                        },
                       );
                     },
                   ),
@@ -312,6 +321,89 @@ class _ExploreScreenState extends State<ExploreScreen> {
             ),
             const SizedBox(height: 24),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showMemberSongAction(BuildContext context, Stem stem, VibeProvider vibe) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+          color: AppTheme.bgElevated,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.sensors_rounded, color: AppTheme.neon, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Party Room (${vibe.room?.code})',
+                      style: const TextStyle(color: AppTheme.neon, fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                stem.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              Text(
+                stem.artistName,
+                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+              ),
+              const SizedBox(height: 18),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.neon,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.send_rounded, size: 16),
+                label: const Text('Suggest to Party Host', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () {
+                  vibe.suggestSong(stem);
+                  Navigator.of(ctx).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      backgroundColor: AppTheme.bgElevated,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      content: Text('Suggested "${stem.title}" to Host!'),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderHairline),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Play Locally (Leaves Party)'),
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  vibe.leaveRoom();
+                  context.read<PlayerProvider>().playWithRadio(stem);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -5,12 +5,14 @@ class SongScrubberBar extends StatefulWidget {
   final Duration position;
   final Duration duration;
   final ValueChanged<Duration> onSeek;
+  final bool enabled;
 
   const SongScrubberBar({
     super.key,
     required this.position,
     required this.duration,
     required this.onSeek,
+    this.enabled = true,
   });
 
   @override
@@ -48,35 +50,41 @@ class _SongScrubberBarState extends State<SongScrubberBar> {
             trackHeight: 4.0,
             activeTrackColor: AppTheme.neon,
             inactiveTrackColor: Colors.white.withValues(alpha: 0.12),
-            thumbColor: Colors.white,
+            thumbColor: widget.enabled ? Colors.white : Colors.transparent,
             thumbShape: RoundSliderThumbShape(
-              enabledThumbRadius: _isDragging ? 9.0 : 7.0,
-              elevation: 4.0,
+              enabledThumbRadius: widget.enabled ? (_isDragging ? 9.0 : 7.0) : 0.0,
+              elevation: widget.enabled ? 4.0 : 0.0,
             ),
             overlayColor: AppTheme.neon.withValues(alpha: 0.25),
-            overlayShape: const RoundSliderOverlayShape(overlayRadius: 18.0),
+            overlayShape: widget.enabled ? const RoundSliderOverlayShape(overlayRadius: 18.0) : SliderComponentShape.noOverlay,
           ),
           child: Slider(
             min: 0.0,
             max: maxVal,
             value: sliderValue,
-            onChangeStart: (val) {
-              setState(() {
-                _isDragging = true;
-                _dragValue = val;
-              });
-            },
-            onChanged: (val) {
-              setState(() {
-                _dragValue = val;
-              });
-            },
-            onChangeEnd: (val) {
-              setState(() {
-                _isDragging = false;
-              });
-              widget.onSeek(Duration(milliseconds: val.toInt()));
-            },
+            onChangeStart: widget.enabled
+                ? (val) {
+                    setState(() {
+                      _isDragging = true;
+                      _dragValue = val;
+                    });
+                  }
+                : null,
+            onChanged: widget.enabled
+                ? (val) {
+                    setState(() {
+                      _dragValue = val;
+                    });
+                  }
+                : null,
+            onChangeEnd: widget.enabled
+                ? (val) {
+                    setState(() {
+                      _isDragging = false;
+                    });
+                    widget.onSeek(Duration(milliseconds: val.toInt()));
+                  }
+                : null,
           ),
         ),
 

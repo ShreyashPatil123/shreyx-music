@@ -39,7 +39,28 @@ class _DeckSheetState extends State<DeckSheet> {
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final vault = context.watch<VaultProvider>();
+    final vibe = context.watch<VibeProvider>();
+    final canControl = vibe.canControlPlayback;
     final stem = player.activeStem;
+
+    void notifyHostControls() {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTheme.bgElevated,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: AppTheme.cyan, width: 0.8),
+          ),
+          content: const Text(
+            'Host controls playback in ShreyX Vibe. Use "Request Song" to suggest!',
+            style: TextStyle(color: Colors.white, fontSize: 12.5),
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
 
     if (stem == null) {
       return Container(
@@ -235,12 +256,17 @@ class _DeckSheetState extends State<DeckSheet> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8.0),
               child: SongScrubberBar(
+                enabled: canControl,
                 position: player.position,
                 duration: player.duration.inSeconds > 0
                     ? player.duration
                     : Duration(seconds: stem.durationSec),
                 onSeek: (target) {
-                  player.seek(target);
+                  if (canControl) {
+                    player.seek(target);
+                  } else {
+                    notifyHostControls();
+                  }
                 },
               ),
             ),
@@ -345,6 +371,31 @@ class _DeckSheetState extends State<DeckSheet> {
               ),
             ),
 
+            // Vibe Member Status Pill
+            if (!canControl)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6.0),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.cyan.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.cyan.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.sensors_rounded, size: 14, color: AppTheme.cyan),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Synced to Party (${vibe.room?.code}) • Host Controls Playback',
+                        style: const TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             // Playback Controls Hub
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 8.0),
@@ -359,9 +410,11 @@ class _DeckSheetState extends State<DeckSheet> {
                     iconSize: 22,
                     icon: Icon(
                       Icons.shuffle_rounded,
-                      color: player.isShuffled ? AppTheme.neon : AppTheme.textMuted,
+                      color: canControl
+                          ? (player.isShuffled ? AppTheme.neon : AppTheme.textMuted)
+                          : AppTheme.textMuted.withValues(alpha: 0.4),
                     ),
-                    onPressed: () => player.toggleShuffle(),
+                    onPressed: canControl ? () => player.toggleShuffle() : notifyHostControls,
                   ),
 
                   // Seek backward -10s
@@ -370,8 +423,11 @@ class _DeckSheetState extends State<DeckSheet> {
                     constraints: const BoxConstraints(),
                     visualDensity: VisualDensity.compact,
                     iconSize: 24,
-                    icon: const Icon(Icons.replay_10_rounded, color: AppTheme.textSecondary),
-                    onPressed: () => player.seekBy(-10),
+                    icon: Icon(
+                      Icons.replay_10_rounded,
+                      color: canControl ? AppTheme.textSecondary : AppTheme.textMuted.withValues(alpha: 0.4),
+                    ),
+                    onPressed: canControl ? () => player.seekBy(-10) : notifyHostControls,
                   ),
 
                   // Skip Previous
@@ -380,26 +436,33 @@ class _DeckSheetState extends State<DeckSheet> {
                     constraints: const BoxConstraints(),
                     visualDensity: VisualDensity.compact,
                     iconSize: 34,
-                    icon: const Icon(Icons.skip_previous_rounded, color: Colors.white),
-                    onPressed: () => player.skipPrev(),
+                    icon: Icon(
+                      Icons.skip_previous_rounded,
+                      color: canControl ? Colors.white : Colors.white24,
+                    ),
+                    onPressed: canControl ? () => player.skipPrev() : notifyHostControls,
                   ),
 
                   // Primary Play / Pause Button with Glow
                   GestureDetector(
-                    onTap: () => player.togglePlayPause(),
+                    onTap: canControl ? () => player.togglePlayPause() : notifyHostControls,
                     child: Container(
                       width: 64,
                       height: 64,
                       decoration: BoxDecoration(
-                        gradient: AppTheme.primaryGradient,
+                        gradient: canControl ? AppTheme.primaryGradient : null,
+                        color: canControl ? null : AppTheme.bgElevated,
                         shape: BoxShape.circle,
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x7700F5D4),
-                            blurRadius: 20,
-                            offset: Offset(0, 6),
-                          ),
-                        ],
+                        border: canControl ? null : Border.all(color: AppTheme.cyan.withValues(alpha: 0.4)),
+                        boxShadow: canControl
+                            ? const [
+                                BoxShadow(
+                                  color: Color(0x7700F5D4),
+                                  blurRadius: 20,
+                                  offset: Offset(0, 6),
+                                ),
+                              ]
+                            : null,
                       ),
                       child: Center(
                         child: player.isBuffering
@@ -414,7 +477,7 @@ class _DeckSheetState extends State<DeckSheet> {
                             : Icon(
                                 player.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
                                 size: 36,
-                                color: Colors.black,
+                                color: canControl ? Colors.black : AppTheme.cyan,
                               ),
                       ),
                     ),
@@ -426,8 +489,11 @@ class _DeckSheetState extends State<DeckSheet> {
                     constraints: const BoxConstraints(),
                     visualDensity: VisualDensity.compact,
                     iconSize: 34,
-                    icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
-                    onPressed: () => player.skipNext(),
+                    icon: Icon(
+                      Icons.skip_next_rounded,
+                      color: canControl ? Colors.white : Colors.white24,
+                    ),
+                    onPressed: canControl ? () => player.skipNext() : notifyHostControls,
                   ),
 
                   // Seek forward +10s
@@ -436,8 +502,11 @@ class _DeckSheetState extends State<DeckSheet> {
                     constraints: const BoxConstraints(),
                     visualDensity: VisualDensity.compact,
                     iconSize: 24,
-                    icon: const Icon(Icons.forward_10_rounded, color: AppTheme.textSecondary),
-                    onPressed: () => player.seekBy(10),
+                    icon: Icon(
+                      Icons.forward_10_rounded,
+                      color: canControl ? AppTheme.textSecondary : AppTheme.textMuted.withValues(alpha: 0.4),
+                    ),
+                    onPressed: canControl ? () => player.seekBy(10) : notifyHostControls,
                   ),
 
                   // Loop Mode
@@ -450,9 +519,11 @@ class _DeckSheetState extends State<DeckSheet> {
                       player.loopMode == LoopMode.one
                           ? Icons.repeat_one_rounded
                           : Icons.repeat_rounded,
-                      color: player.loopMode != LoopMode.off ? AppTheme.cyan : AppTheme.textMuted,
+                      color: canControl
+                          ? (player.loopMode != LoopMode.off ? AppTheme.cyan : AppTheme.textMuted)
+                          : AppTheme.textMuted.withValues(alpha: 0.4),
                     ),
-                    onPressed: () => player.cycleLoopMode(),
+                    onPressed: canControl ? () => player.cycleLoopMode() : notifyHostControls,
                   ),
                 ],
               ),

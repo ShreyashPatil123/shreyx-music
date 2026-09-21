@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/vault_provider.dart';
+import '../providers/vibe_provider.dart';
 import '../screens/deck_sheet.dart';
 import '../theme/app_theme.dart';
 
@@ -22,11 +23,29 @@ class MiniPlayer extends StatelessWidget {
     final durationMs = player.duration.inMilliseconds.toDouble();
     final progress = durationMs > 0 ? (positionMs / durationMs).clamp(0.0, 1.0) : 0.0;
     final isFav = vault.isFavorite(stem.id);
+    final vibe = context.watch<VibeProvider>();
+    final canControl = vibe.canControlPlayback;
+
+    void notifyHostOnly() {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTheme.bgElevated,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 1),
+          content: const Text('Host controls playback in ShreyX Vibe', style: TextStyle(color: Colors.white)),
+        ),
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
       child: GestureDetector(
         onHorizontalDragEnd: (details) {
+          if (!canControl) {
+            notifyHostOnly();
+            return;
+          }
           if (details.primaryVelocity != null) {
             if (details.primaryVelocity! < -200) {
               // Swiped Left -> Skip Next
@@ -160,20 +179,29 @@ class MiniPlayer extends StatelessWidget {
 
                               // Play / Pause Button with Glow
                               GestureDetector(
-                                onTap: () => player.togglePlayPause(),
+                                onTap: () {
+                                  if (!canControl) {
+                                    notifyHostOnly();
+                                  } else {
+                                    player.togglePlayPause();
+                                  }
+                                },
                                 child: Container(
                                   width: 38,
                                   height: 38,
-                                  decoration: const BoxDecoration(
-                                    color: AppTheme.neon,
+                                  decoration: BoxDecoration(
+                                    color: canControl ? AppTheme.neon : AppTheme.bgElevated,
                                     shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Color(0x6600F5D4),
-                                        blurRadius: 10,
-                                        offset: Offset(0, 2),
-                                      ),
-                                    ],
+                                    border: canControl ? null : Border.all(color: AppTheme.borderHairline),
+                                    boxShadow: canControl
+                                        ? const [
+                                            BoxShadow(
+                                              color: Color(0x6600F5D4),
+                                              blurRadius: 10,
+                                              offset: Offset(0, 2),
+                                            ),
+                                          ]
+                                        : null,
                                   ),
                                   child: Center(
                                     child: player.isBuffering
@@ -188,7 +216,7 @@ class MiniPlayer extends StatelessWidget {
                                         : Icon(
                                             player.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
                                             size: 24,
-                                            color: Colors.black,
+                                            color: canControl ? Colors.black : Colors.white60,
                                           ),
                                   ),
                                 ),
@@ -201,8 +229,17 @@ class MiniPlayer extends StatelessWidget {
                                 iconSize: 28,
                                 padding: const EdgeInsets.all(6),
                                 constraints: const BoxConstraints(),
-                                icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
-                                onPressed: () => player.skipNext(),
+                                icon: Icon(
+                                  Icons.skip_next_rounded,
+                                  color: canControl ? Colors.white : Colors.white24,
+                                ),
+                                onPressed: () {
+                                  if (!canControl) {
+                                    notifyHostOnly();
+                                  } else {
+                                    player.skipNext();
+                                  }
+                                },
                               ),
                             ],
                           ),
