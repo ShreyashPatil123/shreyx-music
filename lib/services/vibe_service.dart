@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/stem.dart';
 import '../models/vibe_models.dart';
-import 'embedded_vibe_server.dart';
 
 class VibeService {
   static final VibeService _instance = VibeService._internal();
@@ -19,14 +18,13 @@ class VibeService {
   Timer? _reconnectTimer;
 
   VibeConnectionStatus _status = VibeConnectionStatus.disconnected;
-  VibeConfig _config = const VibeConfig();
+  final VibeConfig _config = const VibeConfig();
 
   String? _sessionToken;
   String? _currentRoomCode;
   String? _currentMemberId;
   String? _userName;
   bool _isHost = false;
-  bool _isHostingLocally = false;
 
   Completer<VibeRoom>? _createRoomCompleter;
   Completer<bool>? _joinRoomCompleter;
@@ -52,7 +50,6 @@ class VibeService {
   String? get currentMemberId => _currentMemberId;
   String? get userName => _userName;
   bool get isHost => _isHost;
-  bool get isHostingLocally => _isHostingLocally;
   int get clockOffsetMs => _clockOffsetMs;
 
   Stream<VibeConnectionStatus> get statusStream => _statusCtrl.stream;
@@ -65,42 +62,8 @@ class VibeService {
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    final isDev = prefs.getBool('vibe_is_dev_mode') ?? false;
-    final customProd = prefs.getString('vibe_custom_prod_url') ?? '';
-    final customDev = prefs.getString('vibe_custom_dev_url') ?? '';
     _sessionToken = prefs.getString('vibe_session_token');
     _userName = prefs.getString('vibe_user_name') ?? 'Music Lover';
-
-    _config = VibeConfig(
-      isDevMode: isDev,
-      customProdUrl: customProd,
-      customDevUrl: customDev,
-    );
-  }
-
-  Future<void> updateConfig({
-    bool? isDevMode,
-    String? customProdUrl,
-    String? customDevUrl,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (isDevMode != null) {
-      await prefs.setBool('vibe_is_dev_mode', isDevMode);
-    }
-    if (customProdUrl != null) {
-      await prefs.setString('vibe_custom_prod_url', customProdUrl);
-    }
-    if (customDevUrl != null) {
-      await prefs.setString('vibe_custom_dev_url', customDevUrl);
-    }
-
-    _config = VibeConfig(
-      isDevMode: isDevMode ?? _config.isDevMode,
-      customProdUrl: customProdUrl ?? _config.customProdUrl,
-      customDevUrl: customDevUrl ?? _config.customDevUrl,
-    );
-
-    debugPrint('[ShreyXVibe] Config updated. Active WS: ${_config.activeWsUrl}');
   }
 
   void _setStatus(VibeConnectionStatus s) {
@@ -110,9 +73,9 @@ class VibeService {
     }
   }
 
-  // Connect to active WebSocket server
-  Future<void> connect({String? customUrl}) async {
-    final targetUrl = customUrl != null ? Uri.parse(customUrl) : Uri.parse(_config.activeWsUrl);
+  // Connect to public cloud WebSocket server with cold-start retry handling
+  Future<void> connect() async {
+    final targetUrl = Uri.parse(_config.activeWsUrl);
 
     if (_status == VibeConnectionStatus.connected && _channel != null) {
       return;
@@ -126,36 +89,61 @@ class VibeService {
     }
 
     _setStatus(VibeConnectionStatus.connecting);
-    debugPrint('[ShreyXVibe] Connecting to: $targetUrl');
+    debugPrint('[ShreyXVibe] Connecting to cloud server: $targetUrl');
 
-    try {
-      _channel = WebSocketChannel.connect(targetUrl);
-      await _channel!.ready;
+    int attempts = 0;
+    const maxAttempts = 5;
 
-      _channelSub?.cancel();
-      _channelSub = _channel!.stream.listen(
-        _onMessageReceived,
-        onError: _onError,
-        onDone: _onDone,
-        cancelOnError: true,
-      );
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        _channel = WebSocketChannel.connect(targetUrl);
+        await _channel!.ready.timeout(const Duration(seconds: 10));
 
-      _setStatus(VibeConnectionStatus.connected);
-      _startHeartbeat();
+        _channelSub?.cancel();
+        _channelSub = _channel!.stream.listen(
+          _onMessageReceived,
+          onError: _onError,
+          onDone: _onDone,
+          cancelOnError: true,
+        );
 
-      // If we had an active session, attempt seamless reconnection
-      if (_currentRoomCode != null && _sessionToken != null) {
-        debugPrint('[ShreyXVibe] Resuming session in room: $_currentRoomCode');
-        _send('join_room', {
-          'room_code': _currentRoomCode,
-          'user_name': _userName ?? 'Guest',
-          'session_token': _sessionToken,
-        });
+        _setStatus(VibeConnectionStatus.connected);
+        _reconnectAttempts = 0;
+        _startHeartbeat();
+
+        // If we had an active session, attempt seamless reconnection
+        if (_currentRoomCode != null && _sessionToken != null) {
+          debugPrint('[ShreyXVibe] Resuming session in room: $_currentRoomCode');
+          _send('join_room', {
+            'room_code': _currentRoomCode,
+            'user_name': _userName ?? 'Guest',
+            'session_token': _sessionToken,
+          });
+        }
+        return;
+      } catch (e) {
+        debugPrint('[ShreyXVibe] Connection attempt $attempts/$maxAttempts failed: $e');
+        if (_channel != null) {
+          try {
+            await _channel!.sink.close();
+          } catch (_) {}
+          _channel = null;
+        }
+
+        if (attempts >= maxAttempts) {
+          _setStatus(VibeConnectionStatus.error);
+          _onError(e);
+          throw TimeoutException(
+            'Could not reach ShreyX Vibe cloud server. Please verify your internet connection and try again.',
+          );
+        }
+
+        // Exponential backoff with jitter for Render free cold start (takes ~30s)
+        final delaySec = 2 + (attempts * 2) + Random().nextInt(2);
+        debugPrint('[ShreyXVibe] Retrying connection in ${delaySec}s for server wake-up...');
+        await Future.delayed(Duration(seconds: delaySec));
       }
-    } catch (e) {
-      debugPrint('[ShreyXVibe] Connection failed: $e');
-      _onError(e);
-      rethrow;
     }
   }
 
@@ -391,20 +379,12 @@ class VibeService {
 
   Future<VibeRoom> createRoom(
     String hostName,
-    String roomName, {
-    bool useLocalHost = false,
-  }) async {
+    String roomName,
+  ) async {
     _userName = hostName;
     _createRoomCompleter = Completer<VibeRoom>();
 
-    if (useLocalHost) {
-      _isHostingLocally = true;
-      final localWsUrl = await EmbeddedVibeServer().start();
-      await connect(customUrl: localWsUrl);
-    } else {
-      _isHostingLocally = false;
-      await connect();
-    }
+    await connect();
 
     _send('create_room', {
       'host_name': hostName,
@@ -412,28 +392,22 @@ class VibeService {
     });
 
     return await _createRoomCompleter!.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 15),
       onTimeout: () {
         _setStatus(VibeConnectionStatus.error);
         throw TimeoutException(
-          useLocalHost
-              ? 'Failed to start local host room.'
-              : 'Connection to cloud server timed out. Check your internet or switch to Direct Device Hosting.',
+          'Connection to ShreyX Vibe timed out. Please check your internet connection and try again.',
         );
       },
     );
   }
 
-  Future<bool> joinRoom(String roomCode, String userName, {String? customServerUrl}) async {
+  Future<bool> joinRoom(String roomCode, String userName) async {
     _userName = userName;
     _currentRoomCode = roomCode.toUpperCase().trim();
     _joinRoomCompleter = Completer<bool>();
 
-    if (customServerUrl != null && customServerUrl.isNotEmpty) {
-      await connect(customUrl: customServerUrl);
-    } else {
-      await connect();
-    }
+    await connect();
 
     _send('join_room', {
       'room_code': _currentRoomCode,
@@ -442,9 +416,9 @@ class VibeService {
     });
 
     return await _joinRoomCompleter!.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 15),
       onTimeout: () {
-        throw TimeoutException('Timed out joining room $roomCode. Ensure the party is active.');
+        throw TimeoutException('Timed out joining party $roomCode. Ensure the party is active.');
       },
     );
   }
@@ -501,10 +475,6 @@ class VibeService {
 
   void leaveRoom() {
     _send('leave_room', {});
-    if (_isHostingLocally) {
-      EmbeddedVibeServer().stop();
-      _isHostingLocally = false;
-    }
     _currentRoomCode = null;
     _currentMemberId = null;
     _isHost = false;

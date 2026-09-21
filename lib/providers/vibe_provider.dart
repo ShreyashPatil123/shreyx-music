@@ -3,7 +3,6 @@ import 'package:flutter/widgets.dart';
 import '../models/stem.dart';
 import '../models/vibe_models.dart';
 import '../services/audio_handler.dart';
-import '../services/embedded_vibe_server.dart';
 import '../services/vibe_service.dart';
 
 class VibeProvider extends ChangeNotifier {
@@ -29,10 +28,6 @@ class VibeProvider extends ChangeNotifier {
   VibeRoom? get room => _room;
   bool get isInRoom => _service.status == VibeConnectionStatus.inRoom && _room != null;
   bool get isHost => _service.isHost;
-  bool get isHostingLocally => _service.isHostingLocally;
-  String? get localServerAddress => _service.isHostingLocally && EmbeddedVibeServer().localIp != null
-      ? 'ws://${EmbeddedVibeServer().localIp}:${EmbeddedVibeServer().port}/ws'
-      : null;
   bool get isWaitingApproval => _service.status == VibeConnectionStatus.waitingApproval;
   VibeConnectionStatus get connectionStatus => _service.status;
   List<Map<String, dynamic>> get pendingJoins => List.unmodifiable(_pendingJoins);
@@ -249,12 +244,10 @@ class VibeProvider extends ChangeNotifier {
   Future<VibeRoom> createRoom({
     required String hostName,
     required String roomName,
-    bool useLocalHost = false,
   }) async {
     final room = await _service.createRoom(
       hostName,
       roomName,
-      useLocalHost: useLocalHost,
     );
     _room = room;
     notifyListeners();
@@ -264,12 +257,10 @@ class VibeProvider extends ChangeNotifier {
   Future<bool> joinRoom({
     required String roomCode,
     required String userName,
-    String? customServerUrl,
   }) async {
     final ok = await _service.joinRoom(
       roomCode,
       userName,
-      customServerUrl: customServerUrl,
     );
     notifyListeners();
     return ok;
@@ -322,12 +313,7 @@ class VibeProvider extends ChangeNotifier {
   }
 
   Future<void> updateConfig({bool? isDevMode, String? customProdUrl, String? customDevUrl}) async {
-    await _service.updateConfig(
-      isDevMode: isDevMode,
-      customProdUrl: customProdUrl,
-      customDevUrl: customDevUrl,
-    );
-    notifyListeners();
+    // ShreyX Vibe operates strictly via the public cloud server
   }
 
   void clearToast() {

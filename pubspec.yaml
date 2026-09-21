@@ -1,7 +1,7 @@
 name: shreyx_music
 description: "ShreyX Music - Autonomous High-Fidelity Music Player for Android & iOS"
 publish_to: 'none'
-version: 1.0.3+4
+version: 1.0.4+5
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

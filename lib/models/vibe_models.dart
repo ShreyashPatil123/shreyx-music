@@ -186,26 +186,15 @@ class VibeRoom {
 }
 
 class VibeConfig {
-  static const String defaultLocalWsUrl = 'ws://127.0.0.1:8080/ws';
   static const String defaultProdWsUrl = String.fromEnvironment(
     'SHREYX_VIBE_SERVER_URL',
     defaultValue: 'wss://shreyx-vibe.onrender.com/ws',
   );
 
-  final bool isDevMode;
-  final String customProdUrl;
-  final String customDevUrl;
+  const VibeConfig();
 
-  const VibeConfig({
-    this.isDevMode = false,
-    this.customProdUrl = '',
-    this.customDevUrl = '',
-  });
-
-  String get activeWsUrl {
-    if (isDevMode) {
-      return customDevUrl.isNotEmpty ? customDevUrl : defaultLocalWsUrl;
-    }
-    return customProdUrl.isNotEmpty ? customProdUrl : defaultProdWsUrl;
-  }
+  String get activeWsUrl => defaultProdWsUrl;
+  bool get isDevMode => false;
+  String get customProdUrl => '';
+  String get customDevUrl => '';
 }
