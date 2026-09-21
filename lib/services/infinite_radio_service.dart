@@ -7,18 +7,39 @@ import '../models/stem.dart';
 class InfiniteRadioService {
   static final InfiniteRadioService _instance = InfiniteRadioService._internal();
 
-  factory InfiniteRadioService() {
-    return _instance;
-  }
+  factory InfiniteRadioService() => _instance;
 
   InfiniteRadioService._internal();
 
   final YoutubeExplode _yt = YoutubeExplode();
+  final Map<String, List<Stem>> _cache = {};
 
-  Future<List<Stem>> fetchRadioTracks(String videoId, {int count = 15}) async {
+  Future<List<Stem>> fetchRadioTracks(String videoId, {int count = 20}) async {
+    String cleanId = videoId.trim();
+    if (cleanId.startsWith('yt_')) {
+      cleanId = cleanId.substring(3);
+    }
+    if (cleanId.contains('?v=')) {
+      cleanId = cleanId.split('?v=').last.split('&').first;
+    }
+    if (cleanId.contains('/')) {
+      cleanId = cleanId.split('/').last;
+    }
+
+    if (cleanId.isEmpty) {
+      debugPrint('[InfiniteRadio] Empty videoId provided, skipping radio fetch');
+      return [];
+    }
+
+    // Check fast in-memory cache (0ms instant return)
+    if (_cache.containsKey(cleanId) && _cache[cleanId]!.isNotEmpty) {
+      debugPrint('[InfiniteRadio] ⚡ In-memory cache hit for "$cleanId" (${_cache[cleanId]!.length} tracks)');
+      return _cache[cleanId]!.take(count).toList();
+    }
+
     final List<Stem> tracks = [];
     try {
-      final innerTubeTracks = await _fetchFromInnerTube(videoId, count: count);
+      final innerTubeTracks = await _fetchFromInnerTube(cleanId, count: count);
       tracks.addAll(innerTubeTracks);
     } catch (e) {
       debugPrint('[InfiniteRadio] InnerTube request failed: $e');
@@ -27,17 +48,16 @@ class InfiniteRadioService {
     if (tracks.isEmpty) {
       try {
         debugPrint('[InfiniteRadio] Falling back to youtube_explode_dart');
-        final fallbackTracks = await _fetchFromYoutubeExplode(videoId, count: count);
+        final fallbackTracks = await _fetchFromYoutubeExplode(cleanId, count: count);
         tracks.addAll(fallbackTracks);
       } catch (e) {
         debugPrint('[InfiniteRadio] Youtube Explode fallback failed: $e');
       }
     }
 
-    // Filter out the seed video and take requested count
-    final result = tracks.where((stem) => stem.sourceId != videoId).toList();
+    // Filter out the seed video and de-duplicate
+    final result = tracks.where((stem) => stem.sourceId != cleanId && stem.sourceId != videoId).toList();
     
-    // De-duplicate by sourceId within the result
     final uniqueResult = <Stem>[];
     final seenIds = <String>{};
     for (final stem in result) {
@@ -47,7 +67,13 @@ class InfiniteRadioService {
       }
     }
 
-    return uniqueResult.take(count).toList();
+    final finalTracks = uniqueResult.take(count).toList();
+    if (finalTracks.isNotEmpty) {
+      _cache[cleanId] = finalTracks;
+      debugPrint('[InfiniteRadio] 📻 Cached ${finalTracks.length} radio tracks for "$cleanId"');
+    }
+
+    return finalTracks;
   }
 
   Future<List<Stem>> _fetchFromInnerTube(String videoId, {required int count}) async {
@@ -67,7 +93,10 @@ class InfiniteRadioService {
 
     final response = await http.post(
       url,
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
       body: body,
     ).timeout(const Duration(seconds: 5));
 

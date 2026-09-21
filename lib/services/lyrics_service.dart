@@ -181,7 +181,7 @@ class LyricsService {
       debugPrint('[Lyrics] Fetching from KuGou for: $title - $artist');
       // Step 1
       final keyword = '$title $artist'.trim();
-      final uri1 = Uri.parse('https://mobilecdn.kugou.com/api/v3/search/song?keyword=${Uri.encodeComponent(keyword)}&page=1&pagesize=5');
+      final uri1 = Uri.parse('http://mobilecdn.kugou.com/api/v3/search/song?keyword=${Uri.encodeComponent(keyword)}&page=1&pagesize=5');
       final res1 = await http.get(uri1).timeout(const Duration(seconds: 5));
       if (res1.statusCode != 200) return null;
       final data1 = jsonDecode(res1.body);
@@ -210,7 +210,7 @@ class LyricsService {
 
       // Step 2
       final durMs = durationSec != null ? durationSec * 1000 : 0;
-      final uri2 = Uri.parse('https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword=&duration=$durMs&hash=$hash');
+      final uri2 = Uri.parse('http://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword=&duration=$durMs&hash=$hash');
       final res2 = await http.get(uri2).timeout(const Duration(seconds: 5));
       if (res2.statusCode != 200) return null;
       final data2 = jsonDecode(res2.body);
@@ -222,7 +222,7 @@ class LyricsService {
       if (id == null || accesskey == null) return null;
 
       // Step 3
-      final uri3 = Uri.parse('https://krcs.kugou.com/download?ver=1&client=pc&id=$id&accesskey=$accesskey&fmt=lrc&charset=utf8');
+      final uri3 = Uri.parse('http://krcs.kugou.com/download?ver=1&client=pc&id=$id&accesskey=$accesskey&fmt=lrc&charset=utf8');
       final res3 = await http.get(uri3).timeout(const Duration(seconds: 5));
       if (res3.statusCode != 200) return null;
       final data3 = jsonDecode(res3.body);

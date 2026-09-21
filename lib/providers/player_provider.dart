@@ -22,6 +22,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   ParsedLyrics? _lyrics;
   bool _isLoadingLyrics = false;
   int _activeLyricIndex = -1;
+  bool _isLoadingRadio = false;
 
   StreamSubscription? _activeStemSub;
   StreamSubscription? _playbackStateSub;
@@ -50,6 +51,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   ParsedLyrics? get lyrics => _lyrics;
   bool get isLoadingLyrics => _isLoadingLyrics;
   int get activeLyricIndex => _activeLyricIndex;
+  bool get isLoadingRadio => _isLoadingRadio;
 
   PlayerProvider(this._audioHandler) {
     WidgetsBinding.instance.addObserver(this);
@@ -177,6 +179,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _duration = Duration(seconds: stem.durationSec);
     _isBuffering = true;
     _activeStem = stem;
+    _isLoadingRadio = true;
     notifyListeners();
 
     try {
@@ -192,12 +195,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         final newQueue = [stem, ...filtered];
         _audioHandler.setQueue(newQueue);
         debugPrint('[PlayerProvider] Queued ${filtered.length} relatable songs for "${stem.title}"');
-        notifyListeners();
       }
     } catch (e) {
       debugPrint('[PlayerProvider] playWithRadio error: $e');
-      _isBuffering = false;
-      _isPlaying = false;
+    } finally {
+      _isLoadingRadio = false;
       notifyListeners();
     }
   }

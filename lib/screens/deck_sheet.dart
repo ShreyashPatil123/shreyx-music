@@ -655,6 +655,39 @@ class _DeckSheetState extends State<DeckSheet> {
             ],
           ),
         ),
+        if (player.isLoadingRadio)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.neon.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.neon.withValues(alpha: 0.35)),
+              ),
+              child: Row(
+                children: const [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.neon),
+                  ),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'INFINITE RADIO • Curating relatable songs...',
+                      style: TextStyle(
+                        color: AppTheme.neon,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         Expanded(
           child: ListView.builder(
             controller: _queueScrollCtrl,
