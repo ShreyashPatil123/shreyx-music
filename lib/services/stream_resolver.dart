@@ -42,6 +42,45 @@ class StreamResolver {
     'https://invidious.f5.si',
   ];
 
+  Future<T> _retryWithBackoff<T>(
+    Future<T> Function() fn, {
+    int maxAttempts = 3,
+    Duration initialDelay = const Duration(milliseconds: 500),
+  }) async {
+    int attempt = 0;
+    Duration delay = initialDelay;
+
+    while (true) {
+      attempt++;
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt >= maxAttempts) {
+          debugPrint('[StreamResolver] Attempt $attempt failed. Max attempts reached. Throwing last error...');
+          rethrow;
+        }
+        debugPrint('[StreamResolver] Attempt $attempt failed: $e. Retrying in ${delay.inMilliseconds}ms...');
+        await Future.delayed(delay);
+        delay *= 2;
+      }
+    }
+  }
+
+  void clearCache() {
+    _cache.clear();
+    _resolvedVideoIds.clear();
+    debugPrint('[StreamResolver] 🧹 Stream cache cleared.');
+  }
+
+  Future<bool> isStreamValid(String url) async {
+    try {
+      final response = await http.head(Uri.parse(url)).timeout(const Duration(seconds: 3));
+      return response.statusCode == 200 || response.statusCode == 206;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<ResolvedStream?> _resolveNative(Stem stem) async {
     if (!Platform.isAndroid) return null;
     try {
@@ -90,6 +129,10 @@ class StreamResolver {
     final cached = _cache[stem.id];
     if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
       return cached;
+    } else if (cached != null) {
+      // Expired - remove from cache and re-resolve
+      _cache.remove(stem.id);
+      debugPrint('[StreamResolver] ⏰ Expired cache entry for "${stem.title}", re-resolving...');
     }
 
     Stem effectiveStem = stem;
@@ -167,17 +210,17 @@ class StreamResolver {
 
     // 5. Direct YoutubeExplode extraction with high-fidelity Opus stream selection
     try {
-      final directRes = await _resolveYoutubeExplode(effectiveStem);
+      final directRes = await _retryWithBackoff(() => _resolveYoutubeExplode(effectiveStem));
       _cache[stem.id] = directRes;
       return directRes;
     } catch (e) {
-      debugPrint('[StreamResolver] Direct YoutubeExplode failed ($e), trying fallback instances...');
+      debugPrint('[StreamResolver] Direct YoutubeExplode failed after retries ($e), trying fallback instances...');
     }
 
     // 6. Emergency Fallback: Invidious instances if direct extraction fails
     for (final host in _invidiousInstances) {
       try {
-        final invRes = await _resolveInvidious(effectiveStem, host);
+        final invRes = await _retryWithBackoff(() => _resolveInvidious(effectiveStem, host));
         _cache[stem.id] = invRes;
         return invRes;
       } catch (_) {}

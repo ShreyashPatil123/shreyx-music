@@ -147,6 +147,19 @@ class StreamCacheService {
   /// Number of cached tracks.
   int get entryCount => _entries.length;
 
+  /// Clears the entire stream cache (all files + metadata).
+  Future<void> clearCache() async {
+    for (final entry in _entries.values.toList()) {
+      try {
+        final file = File(entry.filePath);
+        if (file.existsSync()) file.deleteSync();
+      } catch (_) {}
+    }
+    _entries.clear();
+    await _saveMeta();
+    debugPrint('[StreamCache] Cache cleared');
+  }
+
   // ───────────────── internals ───────────────────
 
   int _totalBytes() =>

@@ -7,6 +7,9 @@ import 'providers/search_provider.dart';
 import 'providers/vault_provider.dart';
 import 'screens/main_navigation.dart';
 import 'services/audio_handler.dart';
+import 'services/audio_normalization_service.dart';
+import 'services/crossfade_audio_engine.dart';
+import 'services/equalizer_service.dart';
 import 'services/stream_cache_service.dart';
 import 'theme/app_theme.dart';
 
@@ -25,8 +28,11 @@ Future<void> main() async {
     ),
   );
 
-  // Initialize LRU stream cache (must happen before audio handler)
+  // Initialize services (must happen before audio handler)
   await StreamCacheService().init();
+  await AudioNormalizationService().init();
+  await CrossfadeAudioEngine().init();
+  await EqualizerService().init();
 
   // Initialize Native Audio Service for Background & Lock Screen Playback
   _audioHandler = await AudioService.init(

@@ -260,6 +260,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         stem.title,
         stem.artistName,
         stem.durationSec,
+        stem.sourceId,
       );
       _lyrics = res;
     } catch (_) {

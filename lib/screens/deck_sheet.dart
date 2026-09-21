@@ -5,8 +5,11 @@ import 'package:provider/provider.dart';
 import '../models/stem.dart';
 import '../providers/player_provider.dart';
 import '../providers/vault_provider.dart';
+import '../services/audio_normalization_service.dart';
+import '../services/equalizer_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_scrubber_bar.dart';
+import 'settings_sheet.dart';
 
 class DeckSheet extends StatefulWidget {
   const DeckSheet({super.key});
@@ -115,23 +118,40 @@ class _DeckSheetState extends State<DeckSheet> {
                       ),
                     ],
                   ),
-                  IconButton(
-                    icon: isDownloaded
-                        ? const Icon(Icons.check_circle_rounded, color: AppTheme.neon, size: 24)
-                        : isDownloading
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.cyan),
-                              )
-                            : const Icon(Icons.download_outlined, color: Colors.white70, size: 24),
-                    onPressed: () {
-                      if (isDownloaded) {
-                        vault.removeDownload(stem.id);
-                      } else if (!isDownloading) {
-                        vault.downloadStem(stem);
-                      }
-                    },
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 22),
+                        tooltip: 'Settings & EQ',
+                        onPressed: () {
+                          showModalBottomSheet(
+                            context: context,
+                            isScrollControlled: true,
+                            backgroundColor: Colors.transparent,
+                            builder: (_) => const SettingsSheet(),
+                          ).then((_) => setState(() {}));
+                        },
+                      ),
+                      IconButton(
+                        icon: isDownloaded
+                            ? const Icon(Icons.check_circle_rounded, color: AppTheme.neon, size: 24)
+                            : isDownloading
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.cyan),
+                                  )
+                                : const Icon(Icons.download_outlined, color: Colors.white70, size: 24),
+                        onPressed: () {
+                          if (isDownloaded) {
+                            vault.removeDownload(stem.id);
+                          } else if (!isDownloading) {
+                            vault.downloadStem(stem);
+                          }
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -205,52 +225,100 @@ class _DeckSheetState extends State<DeckSheet> {
             // Studio Spec Pills
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppTheme.bgElevated,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppTheme.borderHairline),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppTheme.bgElevated,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppTheme.borderHairline),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(Icons.graphic_eq_rounded, size: 12, color: AppTheme.neon),
+                          SizedBox(width: 5),
+                          Text(
+                            'HQ OPUS • 160 KBPS',
+                            style: TextStyle(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.8,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        Icon(Icons.graphic_eq_rounded, size: 12, color: AppTheme.neon),
-                        SizedBox(width: 5),
-                        Text(
-                          'HQ OPUS • 160 KBPS • 48 kHz',
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                        showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => const SettingsSheet(),
+                        ).then((_) => setState(() {}));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AudioNormalizationService().isEnabled
+                              ? AppTheme.neon.withValues(alpha: 0.12)
+                              : AppTheme.bgElevated,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AudioNormalizationService().isEnabled
+                                ? AppTheme.neon.withValues(alpha: 0.4)
+                                : AppTheme.borderHairline,
+                          ),
+                        ),
+                        child: Text(
+                          AudioNormalizationService().isEnabled ? 'NORM: -14 LUFS' : 'NORM: OFF',
                           style: TextStyle(
                             fontSize: 9.5,
                             fontWeight: FontWeight.w700,
                             letterSpacing: 0.8,
-                            color: AppTheme.textPrimary,
+                            color: AudioNormalizationService().isEnabled ? AppTheme.neon : AppTheme.textMuted,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: AppTheme.bgElevated,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppTheme.borderHairline),
-                    ),
-                    child: const Text(
-                      'SHREYX CORE',
-                      style: TextStyle(
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: AppTheme.cyan,
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                        showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => const SettingsSheet(),
+                        ).then((_) => setState(() {}));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bgElevated,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppTheme.borderHairline),
+                        ),
+                        child: Text(
+                          'EQ: ${EqualizerService().activePreset.name.toUpperCase()}',
+                          style: const TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.8,
+                            color: AppTheme.cyan,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
 

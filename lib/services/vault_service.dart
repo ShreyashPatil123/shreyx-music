@@ -11,10 +11,15 @@ class VaultService {
 
   final Map<String, Stem> _favorites = {};
   final List<Playlist> _playlists = [];
+  final List<Map<String, dynamic>> _history = [];
+  final Map<String, int> _playCountMap = {};
+
   Function()? onVaultChanged;
 
   static const String _favKey = 'shrex_favorites';
   static const String _playlistKey = 'shrex_playlists';
+  static const String _historyKey = 'shrex_play_history';
+  static const String _playCountKey = 'shrex_play_counts';
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -39,6 +44,28 @@ class VaultService {
         _playlists.clear();
         for (final item in list) {
           _playlists.add(Playlist.fromJson(item as Map<String, dynamic>));
+        }
+      } catch (_) {}
+    }
+
+    // Load History
+    final histRaw = prefs.getString(_historyKey);
+    if (histRaw != null) {
+      try {
+        final list = jsonDecode(histRaw) as List<dynamic>;
+        for (final item in list) {
+          _history.add(Map<String, dynamic>.from(item as Map));
+        }
+      } catch (_) {}
+    }
+
+    // Load Play Counts
+    final playCountRaw = prefs.getString(_playCountKey);
+    if (playCountRaw != null) {
+      try {
+        final map = jsonDecode(playCountRaw) as Map<String, dynamic>;
+        for (final key in map.keys) {
+          _playCountMap[key] = map[key] as int;
         }
       } catch (_) {}
     }
@@ -119,6 +146,72 @@ class VaultService {
       await _saveFavorites();
       onVaultChanged?.call();
     }
+  }
+
+  Future<void> recordPlay(Stem stem) async {
+    _history.removeWhere((entry) {
+      final entryStem = Stem.fromJson(entry['stem'] as Map<String, dynamic>);
+      return entryStem.id == stem.id;
+    });
+
+    _history.insert(0, {
+      'stem': stem.toJson(),
+      'playedAt': DateTime.now().toIso8601String(),
+    });
+
+    if (_history.length > 200) {
+      _history.removeRange(200, _history.length);
+    }
+
+    _playCountMap[stem.id] = (_playCountMap[stem.id] ?? 0) + 1;
+
+    await _saveHistory();
+    await _savePlayCounts();
+  }
+
+  List<Stem> getRecentTracks({int limit = 30}) {
+    final stems = _history.map((entry) => Stem.fromJson(entry['stem'] as Map<String, dynamic>)).toList();
+    if (stems.length > limit) {
+      return stems.sublist(0, limit);
+    }
+    return stems;
+  }
+
+  List<Stem> getFrequentlyPlayed({int limit = 20}) {
+    final Map<String, Stem> knownStems = {};
+    
+    // Aggregate known stems from history, favorites, and playlists
+    for (final entry in _history) {
+      final s = Stem.fromJson(entry['stem'] as Map<String, dynamic>);
+      knownStems[s.id] = s;
+    }
+    for (final s in _favorites.values) {
+      knownStems[s.id] = s;
+    }
+    for (final pl in _playlists) {
+      for (final s in pl.stems) {
+        knownStems[s.id] = s;
+      }
+    }
+
+    final sortedEntries = _playCountMap.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final List<Stem> frequentStems = [];
+    for (final entry in sortedEntries) {
+      if (knownStems.containsKey(entry.key)) {
+        frequentStems.add(knownStems[entry.key]!);
+        if (frequentStems.length >= limit) break;
+      }
+    }
+    return frequentStems;
+  }
+
+  Future<void> clearHistory() async {
+    _history.clear();
+    _playCountMap.clear();
+    await _saveHistory();
+    await _savePlayCounts();
   }
 
   /// Upgrades tracks in existing playlists that share the playlist mosaic artwork
@@ -202,5 +295,15 @@ class VaultService {
     final prefs = await SharedPreferences.getInstance();
     final jsonList = _playlists.map((p) => p.toJson()).toList();
     await prefs.setString(_playlistKey, jsonEncode(jsonList));
+  }
+
+  Future<void> _saveHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_historyKey, jsonEncode(_history));
+  }
+
+  Future<void> _savePlayCounts() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playCountKey, jsonEncode(_playCountMap));
   }
 }
