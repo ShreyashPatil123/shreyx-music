@@ -5,12 +5,14 @@ import 'package:provider/provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/search_provider.dart';
 import 'providers/vault_provider.dart';
+import 'providers/vibe_provider.dart';
 import 'screens/main_navigation.dart';
 import 'services/audio_handler.dart';
 import 'services/audio_normalization_service.dart';
 import 'services/crossfade_audio_engine.dart';
 import 'services/equalizer_service.dart';
 import 'services/stream_cache_service.dart';
+import 'services/vibe_service.dart';
 import 'theme/app_theme.dart';
 
 late ShrexAudioHandler _audioHandler;
@@ -33,6 +35,7 @@ Future<void> main() async {
   await AudioNormalizationService().init();
   await CrossfadeAudioEngine().init();
   await EqualizerService().init();
+  await VibeService().init();
 
   // Initialize Native Audio Service for Background & Lock Screen Playback
   _audioHandler = await AudioService.init(
@@ -59,6 +62,7 @@ class ShrexApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => PlayerProvider(_audioHandler)),
         ChangeNotifierProvider(create: (_) => VaultProvider()),
         ChangeNotifierProvider(create: (_) => SearchProvider()),
+        ChangeNotifierProvider(create: (_) => VibeProvider(audioHandler: _audioHandler)),
       ],
       child: MaterialApp(
         title: 'ShreyX Music',

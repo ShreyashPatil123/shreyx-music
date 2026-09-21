@@ -1,0 +1,15 @@
+# Render Blueprint for ShreyX Vibe Free Web Service
+services:
+  - type: web
+    name: shreyx-vibe
+    env: go
+    plan: free
+    region: oregon
+    rootDir: server
+    buildCommand: go build -v -o vibe-server .
+    startCommand: ./vibe-server
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 10000

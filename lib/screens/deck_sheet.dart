@@ -5,11 +5,14 @@ import 'package:provider/provider.dart';
 import '../models/stem.dart';
 import '../providers/player_provider.dart';
 import '../providers/vault_provider.dart';
+import '../providers/vibe_provider.dart';
 import '../services/audio_normalization_service.dart';
 import '../services/equalizer_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_scrubber_bar.dart';
 import 'settings_sheet.dart';
+import 'vibe/vibe_home_sheet.dart';
+import 'vibe/vibe_room_screen.dart';
 
 class DeckSheet extends StatefulWidget {
   const DeckSheet({super.key});
@@ -121,6 +124,26 @@ class _DeckSheetState extends State<DeckSheet> {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      Consumer<VibeProvider>(
+                        builder: (context, vibe, _) {
+                          final isInRoom = vibe.isInRoom;
+                          return IconButton(
+                            icon: Icon(
+                              Icons.sensors_rounded,
+                              color: isInRoom ? AppTheme.neon : Colors.white70,
+                              size: 22,
+                            ),
+                            tooltip: isInRoom ? 'Party Active (${vibe.room?.code})' : 'Listen Together (Vibe)',
+                            onPressed: () {
+                              if (isInRoom) {
+                                VibeRoomScreen.push(context);
+                              } else {
+                                VibeHomeSheet.show(context);
+                              }
+                            },
+                          );
+                        },
+                      ),
                       IconButton(
                         icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 22),
                         tooltip: 'Settings & EQ',

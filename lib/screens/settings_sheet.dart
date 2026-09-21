@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../theme/app_theme.dart';
 import '../services/audio_normalization_service.dart';
 import '../services/crossfade_audio_engine.dart';
 import '../services/equalizer_service.dart';
 import '../services/stream_cache_service.dart';
+import '../providers/vibe_provider.dart';
+import 'vibe/vibe_home_sheet.dart';
 
 class SettingsSheet extends StatefulWidget {
   const SettingsSheet({super.key});
@@ -243,6 +246,65 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 ),
 
                 const SizedBox(height: 16),
+                _buildSectionHeader('ShreyX Vibe (Party Mode)'),
+                Consumer<VibeProvider>(
+                  builder: (context, vibe, _) {
+                    final config = vibe.config;
+                    return Column(
+                      children: [
+                        SwitchListTile(
+                          title: const Text(
+                            'Local Development Mode',
+                            style: TextStyle(color: AppTheme.textPrimary),
+                          ),
+                          subtitle: Text(
+                            config.isDevMode
+                                ? 'Active: ws://127.0.0.1:8080/ws'
+                                : 'Active: ${config.activeWsUrl}',
+                            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                          ),
+                          value: config.isDevMode,
+                          activeThumbColor: AppTheme.neon,
+                          activeTrackColor: AppTheme.neon.withValues(alpha: 0.4),
+                          onChanged: (val) {
+                            vibe.updateConfig(isDevMode: val);
+                          },
+                        ),
+                        ListTile(
+                          title: const Text(
+                            'Custom Server URL',
+                            style: TextStyle(color: AppTheme.textPrimary),
+                          ),
+                          subtitle: Text(
+                            config.isDevMode
+                                ? (config.customDevUrl.isNotEmpty ? config.customDevUrl : 'Default: ws://127.0.0.1:8080/ws')
+                                : (config.customProdUrl.isNotEmpty ? config.customProdUrl : 'Default: wss://shreyx-vibe.onrender.com/ws'),
+                            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                          ),
+                          trailing: const Icon(Icons.edit_outlined, color: AppTheme.neon, size: 20),
+                          onTap: () => _showServerUrlDialog(context, vibe),
+                        ),
+                        ListTile(
+                          title: const Text(
+                            'Open ShreyX Vibe',
+                            style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            vibe.isInRoom ? 'In Room: ${vibe.room?.code}' : 'Host or join a synchronized room',
+                            style: TextStyle(color: vibe.isInRoom ? AppTheme.neon : AppTheme.textSecondary, fontSize: 12),
+                          ),
+                          trailing: const Icon(Icons.sensors_rounded, color: AppTheme.neon),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            VibeHomeSheet.show(context);
+                          },
+                        ),
+                      ],
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 16),
                 _buildSectionHeader('About'),
                 const ListTile(
                   title: Text(
@@ -274,6 +336,75 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showServerUrlDialog(BuildContext context, VibeProvider vibe) {
+    final config = vibe.config;
+    final isDev = config.isDevMode;
+    final currentVal = isDev ? config.customDevUrl : config.customProdUrl;
+    final ctrl = TextEditingController(text: currentVal);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgElevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          isDev ? 'Configure Local Server URL' : 'Configure Production Server URL',
+          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isDev
+                  ? 'Default: ws://127.0.0.1:8080/ws\n(Use adb reverse tcp:8080 tcp:8080 for USB)'
+                  : 'Default: wss://shreyx-vibe.onrender.com/ws\n(Supports secure WSS on free Render host)',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: isDev ? 'ws://127.0.0.1:8080/ws' : 'wss://...',
+                hintStyle: const TextStyle(color: Colors.white24),
+                filled: true,
+                fillColor: AppTheme.bg,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            child: const Text('Reset Default', style: TextStyle(color: AppTheme.danger)),
+            onPressed: () {
+              if (isDev) {
+                vibe.updateConfig(customDevUrl: '');
+              } else {
+                vibe.updateConfig(customProdUrl: '');
+              }
+              Navigator.of(ctx).pop();
+            },
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.neon, foregroundColor: Colors.black),
+            child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () {
+              final val = ctrl.text.trim();
+              if (isDev) {
+                vibe.updateConfig(customDevUrl: val);
+              } else {
+                vibe.updateConfig(customProdUrl: val);
+              }
+              Navigator.of(ctx).pop();
+            },
           ),
         ],
       ),

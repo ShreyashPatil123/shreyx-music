@@ -4,12 +4,15 @@ import 'package:provider/provider.dart';
 import '../models/playlist.dart';
 import '../models/stem.dart';
 import '../providers/player_provider.dart';
+import '../providers/vibe_provider.dart';
 import '../services/innertube_feed_service.dart';
 import '../services/vault_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/track_row.dart';
 import 'playlist_detail_screen.dart';
 import 'settings_sheet.dart';
+import 'vibe/vibe_home_sheet.dart';
+import 'vibe/vibe_room_screen.dart';
 
 class DiscoverScreen extends StatefulWidget {
   const DiscoverScreen({super.key});
@@ -109,6 +112,50 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           ],
         ),
         actions: [
+          Consumer<VibeProvider>(
+            builder: (context, vibe, _) {
+              final isInRoom = vibe.isInRoom;
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      Icons.sensors_rounded,
+                      color: isInRoom ? AppTheme.neon : Colors.white70,
+                      size: 22,
+                    ),
+                    tooltip: isInRoom ? 'Party Active (${vibe.room?.code})' : 'ShreyX Vibe (Party Mode)',
+                    onPressed: () {
+                      if (isInRoom) {
+                        VibeRoomScreen.push(context);
+                      } else {
+                        VibeHomeSheet.show(context);
+                      }
+                    },
+                  ),
+                  if (isInRoom)
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: AppTheme.neon,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppTheme.neon.withValues(alpha: 0.8),
+                              blurRadius: 6,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.tune_rounded, color: AppTheme.neon, size: 22),
             tooltip: 'Audio & App Settings',
