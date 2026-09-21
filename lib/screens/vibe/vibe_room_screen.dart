@@ -127,6 +127,28 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
       ),
       body: Column(
         children: [
+          if (vibe.isReconnecting)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 16),
+              color: Colors.amber.withValues(alpha: 0.15),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.amberAccent),
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'Reconnecting to party...',
+                    style: TextStyle(color: Colors.amberAccent, fontSize: 11.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+
           // Room Name & Host Badge
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),

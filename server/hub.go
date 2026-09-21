@@ -53,32 +53,50 @@ func (h *Hub) Unregister(c *Client) {
 		return
 	}
 
-	h.mu.RLock()
-	room, ok := h.rooms[roomCode]
-	h.mu.RUnlock()
+	log.Printf("[VibeHub] Client %s socket closed for room %s; starting 60s disconnect grace period", memberID, roomCode)
 
-	if !ok {
-		return
-	}
+	// Grace period: allow mobile devices to minimize, lock screen, or switch networks without losing room/host state
+	go func(rCode string, mID string, originalClient *Client) {
+		time.Sleep(60 * time.Second)
 
-	wasHost, newHost := room.RemoveMember(memberID)
-	log.Printf("[VibeHub] Member %s disconnected from room %s (wasHost=%v)", memberID, roomCode, wasHost)
+		h.mu.Lock()
+		room, ok := h.rooms[rCode]
+		if !ok {
+			h.mu.Unlock()
+			return
+		}
 
-	var newHostID string
-	if newHost != nil {
-		newHostID = newHost.memberID
-	}
+		room.mu.RLock()
+		currentClient, exists := room.Members[mID]
+		room.mu.RUnlock()
 
-	room.BroadcastApproved(TypeMemberLeft, map[string]string{
-		"member_id":   memberID,
-		"new_host_id": newHostID,
-	})
+		// If member has reconnected with a new active connection or is no longer the original disconnected client, keep them!
+		if !exists || (currentClient != nil && currentClient != originalClient) {
+			h.mu.Unlock()
+			return
+		}
 
-	if newHost != nil {
-		newHost.SendJSON(TypeHostTransferred, map[string]string{
-			"new_host_id": newHost.memberID,
+		wasHost, newHost := room.RemoveMember(mID)
+		h.mu.Unlock()
+
+		log.Printf("[VibeHub] Member %s grace period expired in room %s (wasHost=%v)", mID, rCode, wasHost)
+
+		var newHostID string
+		if newHost != nil {
+			newHostID = newHost.memberID
+		}
+
+		room.BroadcastApproved(TypeMemberLeft, map[string]string{
+			"member_id":   mID,
+			"new_host_id": newHostID,
 		})
-	}
+
+		if newHost != nil {
+			newHost.SendJSON(TypeHostTransferred, map[string]string{
+				"new_host_id": newHost.memberID,
+			})
+		}
+	}(roomCode, memberID, c)
 }
 
 func (h *Hub) startCleanupTicker() {
@@ -493,7 +511,35 @@ func (h *Hub) handleRequestSync(c *Client) {
 }
 
 func (h *Hub) handleLeaveRoom(c *Client) {
-	h.Unregister(c)
+	h.mu.Lock()
+	delete(h.clients, c)
+	delete(h.sessions, c.sessionToken)
+	roomCode := c.roomCode
+	memberID := c.memberID
+	room, ok := h.rooms[roomCode]
+	h.mu.Unlock()
+
+	if ok && memberID != "" {
+		wasHost, newHost := room.RemoveMember(memberID)
+		log.Printf("[VibeHub] Member %s explicitly left room %s (wasHost=%v)", memberID, roomCode, wasHost)
+
+		var newHostID string
+		if newHost != nil {
+			newHostID = newHost.memberID
+		}
+
+		room.BroadcastApproved(TypeMemberLeft, map[string]string{
+			"member_id":   memberID,
+			"new_host_id": newHostID,
+		})
+
+		if newHost != nil {
+			newHost.SendJSON(TypeHostTransferred, map[string]string{
+				"new_host_id": newHost.memberID,
+			})
+		}
+	}
+
 	c.roomCode = ""
 	c.isApproved = false
 	c.isHost = false

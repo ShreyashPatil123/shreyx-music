@@ -5,7 +5,7 @@ import '../models/vibe_models.dart';
 import '../services/audio_handler.dart';
 import '../services/vibe_service.dart';
 
-class VibeProvider extends ChangeNotifier {
+class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   final ShrexAudioHandler _audioHandler;
   final VibeService _service = VibeService();
 
@@ -26,7 +26,9 @@ class VibeProvider extends ChangeNotifier {
   final List<StreamSubscription> _subscriptions = [];
 
   VibeRoom? get room => _room;
-  bool get isInRoom => _service.status == VibeConnectionStatus.inRoom && _room != null;
+  bool get isInRoom => _room != null;
+  bool get isConnected => _service.status == VibeConnectionStatus.inRoom || _service.status == VibeConnectionStatus.connected;
+  bool get isReconnecting => _room != null && !isConnected;
   bool get isHost => _service.isHost;
   bool get isWaitingApproval => _service.status == VibeConnectionStatus.waitingApproval;
   VibeConnectionStatus get connectionStatus => _service.status;
@@ -39,7 +41,22 @@ class VibeProvider extends ChangeNotifier {
   bool get canControlPlayback => !isInRoom || isHost;
 
   VibeProvider({required ShrexAudioHandler audioHandler}) : _audioHandler = audioHandler {
+    WidgetsBinding.instance.addObserver(this);
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (_room != null || _service.currentRoomCode != null) {
+        debugPrint('[ShreyXVibe] App resumed while in room (${_room?.code ?? _service.currentRoomCode}). Verifying connection...');
+        if (!isConnected) {
+          _service.connect();
+        } else {
+          _service.requestSync();
+        }
+      }
+    }
   }
 
   Future<void> _init() async {
@@ -50,13 +67,7 @@ class VibeProvider extends ChangeNotifier {
 
   void _subscribeToService() {
     _subscriptions.add(_service.statusStream.listen((status) {
-      if (status == VibeConnectionStatus.disconnected || status == VibeConnectionStatus.error) {
-        if (_room != null) {
-          _room = null;
-          _pendingJoins.clear();
-          _pendingSuggestions.clear();
-        }
-      }
+      // Keep _room intact during temporary socket drops (app minimization or cellular switches)
       notifyListeners();
     }));
 
@@ -103,6 +114,11 @@ class VibeProvider extends ChangeNotifier {
 
     _subscriptions.add(_service.messageStream.listen((msg) {
       _toastMessage = msg;
+      if (msg.toLowerCase().contains('not found') || msg.toLowerCase().contains('room does not exist') || msg.toLowerCase().contains('closed') || msg.toLowerCase().contains('ended')) {
+        _room = null;
+        _pendingJoins.clear();
+        _pendingSuggestions.clear();
+      }
       notifyListeners();
     }));
 
@@ -323,6 +339,7 @@ class VibeProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     for (final sub in _subscriptions) {
       sub.cancel();
     }
