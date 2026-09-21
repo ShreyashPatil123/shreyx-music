@@ -28,6 +28,7 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
   final TextEditingController _hostNameCtrl = TextEditingController();
 
   bool _isCreatingOrJoining = false;
+  bool _hostOnDevice = true;
 
   @override
   void initState() {
@@ -61,8 +62,23 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
     }
 
     setState(() => _isCreatingOrJoining = true);
-    await vibe.joinRoom(roomCode: code, userName: name.isNotEmpty ? name : 'Guest');
-    setState(() => _isCreatingOrJoining = false);
+    try {
+      await vibe.joinRoom(roomCode: code, userName: name.isNotEmpty ? name : 'Guest');
+      if (mounted) {
+        setState(() => _isCreatingOrJoining = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isCreatingOrJoining = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            content: Text('Join failed: ${e.toString().replaceAll("Exception: ", "")}'),
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _handleCreate(VibeProvider vibe) async {
@@ -70,16 +86,73 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
     final hostName = _hostNameCtrl.text.trim();
 
     setState(() => _isCreatingOrJoining = true);
-    await vibe.createRoom(
-      hostName: hostName.isNotEmpty ? hostName : 'Host',
-      roomName: roomName.isNotEmpty ? roomName : 'Party Room',
-    );
-    setState(() => _isCreatingOrJoining = false);
-
-    if (mounted && vibe.isInRoom) {
-      Navigator.of(context).pop();
-      VibeRoomScreen.push(context);
+    try {
+      await vibe.createRoom(
+        hostName: hostName.isNotEmpty ? hostName : 'Host',
+        roomName: roomName.isNotEmpty ? roomName : 'Party Room',
+        useLocalHost: _hostOnDevice,
+      );
+      if (mounted) {
+        setState(() => _isCreatingOrJoining = false);
+        Navigator.of(context).pop();
+        VibeRoomScreen.push(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isCreatingOrJoining = false);
+        _showErrorDialog(
+          context,
+          title: 'Hosting Failed',
+          message: e.toString().replaceAll('Exception: ', ''),
+          canFallbackToLocal: !_hostOnDevice,
+          onFallback: () {
+            setState(() => _hostOnDevice = true);
+            _handleCreate(vibe);
+          },
+        );
+      }
     }
+  }
+
+  void _showErrorDialog(
+    BuildContext context, {
+    required String title,
+    required String message,
+    required bool canFallbackToLocal,
+    required VoidCallback onFallback,
+  }) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.bgElevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.wifi_off_rounded, color: Colors.orangeAccent),
+            const SizedBox(width: 8),
+            Text(title, style: const TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: Text(
+          message,
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        actions: [
+          if (canFallbackToLocal)
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                onFallback();
+              },
+              child: const Text('Host on this Device (Local)', style: TextStyle(color: AppTheme.neon, fontWeight: FontWeight.bold)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Dismiss', style: TextStyle(color: AppTheme.textMuted)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -278,7 +351,7 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                   const SizedBox(height: 18),
 
                   SizedBox(
-                    height: 240,
+                    height: 295,
                     child: TabBarView(
                       controller: _tabCtrl,
                       children: [
@@ -352,6 +425,78 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
+                            // Host Mode Switcher
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.all(3),
+                              decoration: BoxDecoration(
+                                color: AppTheme.bgElevated,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: AppTheme.borderHairline),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () => setState(() => _hostOnDevice = true),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: _hostOnDevice ? AppTheme.neon.withValues(alpha: 0.2) : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: _hostOnDevice ? Border.all(color: AppTheme.neon, width: 0.8) : null,
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.phone_android_rounded, size: 14, color: _hostOnDevice ? AppTheme.neon : AppTheme.textMuted),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'This Device (Local)',
+                                              style: TextStyle(
+                                                color: _hostOnDevice ? AppTheme.neon : AppTheme.textMuted,
+                                                fontSize: 11,
+                                                fontWeight: _hostOnDevice ? FontWeight.bold : FontWeight.normal,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () => setState(() => _hostOnDevice = false),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: !_hostOnDevice ? AppTheme.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: !_hostOnDevice ? Border.all(color: AppTheme.cyan, width: 0.8) : null,
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.cloud_outlined, size: 14, color: !_hostOnDevice ? AppTheme.cyan : AppTheme.textMuted),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'Cloud (Remote)',
+                                              style: TextStyle(
+                                                color: !_hostOnDevice ? AppTheme.cyan : AppTheme.textMuted,
+                                                fontSize: 11,
+                                                fontWeight: !_hostOnDevice ? FontWeight.bold : FontWeight.normal,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                             TextField(
                               controller: _hostRoomNameCtrl,
                               style: const TextStyle(color: Colors.white, fontSize: 14),
@@ -368,7 +513,7 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 10),
                             TextField(
                               controller: _hostNameCtrl,
                               style: const TextStyle(color: Colors.white, fontSize: 14),
@@ -382,6 +527,16 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                                   borderRadius: BorderRadius.circular(12),
                                   borderSide: const BorderSide(color: AppTheme.borderHairline),
                                 ),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              _hostOnDevice
+                                  ? '✓ Runs on your phone. Friends on same Wi-Fi or Hotspot join instantly.'
+                                  : '☁ Connects to cloud server (${vibe.config.activeWsUrl}) for remote friends.',
+                              style: TextStyle(
+                                color: _hostOnDevice ? AppTheme.neon : AppTheme.cyan,
+                                fontSize: 10.5,
                               ),
                             ),
                             const Spacer(),

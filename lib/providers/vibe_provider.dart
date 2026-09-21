@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../models/stem.dart';
 import '../models/vibe_models.dart';
 import '../services/audio_handler.dart';
+import '../services/embedded_vibe_server.dart';
 import '../services/vibe_service.dart';
 
 class VibeProvider extends ChangeNotifier {
@@ -28,6 +29,10 @@ class VibeProvider extends ChangeNotifier {
   VibeRoom? get room => _room;
   bool get isInRoom => _service.status == VibeConnectionStatus.inRoom && _room != null;
   bool get isHost => _service.isHost;
+  bool get isHostingLocally => _service.isHostingLocally;
+  String? get localServerAddress => _service.isHostingLocally && EmbeddedVibeServer().localIp != null
+      ? 'ws://${EmbeddedVibeServer().localIp}:${EmbeddedVibeServer().port}/ws'
+      : null;
   bool get isWaitingApproval => _service.status == VibeConnectionStatus.waitingApproval;
   VibeConnectionStatus get connectionStatus => _service.status;
   List<Map<String, dynamic>> get pendingJoins => List.unmodifiable(_pendingJoins);
@@ -241,12 +246,33 @@ class VibeProvider extends ChangeNotifier {
 
   // --- Public Actions for UI ---
 
-  Future<void> createRoom({required String hostName, required String roomName}) async {
-    await _service.createRoom(hostName, roomName);
+  Future<VibeRoom> createRoom({
+    required String hostName,
+    required String roomName,
+    bool useLocalHost = false,
+  }) async {
+    final room = await _service.createRoom(
+      hostName,
+      roomName,
+      useLocalHost: useLocalHost,
+    );
+    _room = room;
+    notifyListeners();
+    return room;
   }
 
-  Future<void> joinRoom({required String roomCode, required String userName}) async {
-    await _service.joinRoom(roomCode, userName);
+  Future<bool> joinRoom({
+    required String roomCode,
+    required String userName,
+    String? customServerUrl,
+  }) async {
+    final ok = await _service.joinRoom(
+      roomCode,
+      userName,
+      customServerUrl: customServerUrl,
+    );
+    notifyListeners();
+    return ok;
   }
 
   void approveJoin(String memberId) {

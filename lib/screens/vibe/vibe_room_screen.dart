@@ -37,8 +37,13 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
     super.dispose();
   }
 
-  void _copyRoomCode(BuildContext context, String code) {
-    Clipboard.setData(ClipboardData(text: code));
+  void _copyRoomCode(BuildContext context, VibeProvider vibe, String code) {
+    final localAddr = vibe.localServerAddress;
+    final textToCopy = localAddr != null
+        ? 'Join my ShreyX Vibe Party!\nRoom Code: $code\nLocal Wi-Fi Address: $localAddr'
+        : 'Join my ShreyX Vibe Party!\nRoom Code: $code';
+
+    Clipboard.setData(ClipboardData(text: textToCopy));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: AppTheme.bgElevated,
@@ -47,7 +52,12 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
           borderRadius: BorderRadius.circular(10),
           side: const BorderSide(color: AppTheme.neon, width: 0.8),
         ),
-        content: Text('Room code $code copied to clipboard!', style: const TextStyle(color: Colors.white)),
+        content: Text(
+          localAddr != null
+              ? 'Party invite copied! (Code: $code • $localAddr)'
+              : 'Room code $code copied to clipboard!',
+          style: const TextStyle(color: Colors.white),
+        ),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -84,7 +94,7 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: InkWell(
-          onTap: () => _copyRoomCode(context, room.code),
+          onTap: () => _copyRoomCode(context, vibe, room.code),
           borderRadius: BorderRadius.circular(14),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -157,6 +167,30 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
               ],
             ),
           ),
+
+          if (isHost && vibe.isHostingLocally && vibe.localServerAddress != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2.0, bottom: 4.0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppTheme.neon.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppTheme.neon.withValues(alpha: 0.3), width: 0.5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.wifi_rounded, size: 12, color: AppTheme.neon),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Local Wi-Fi Server: ${vibe.localServerAddress}',
+                      style: const TextStyle(color: AppTheme.neon, fontSize: 11, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            ),
 
           const SizedBox(height: 8),
 

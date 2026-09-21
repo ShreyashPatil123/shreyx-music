@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/stem.dart';
 import '../models/vibe_models.dart';
+import 'embedded_vibe_server.dart';
 
 class VibeService {
   static final VibeService _instance = VibeService._internal();
@@ -25,6 +26,10 @@ class VibeService {
   String? _currentMemberId;
   String? _userName;
   bool _isHost = false;
+  bool _isHostingLocally = false;
+
+  Completer<VibeRoom>? _createRoomCompleter;
+  Completer<bool>? _joinRoomCompleter;
 
   // Clock synchronization
   int _clockOffsetMs = 0;
@@ -47,6 +52,7 @@ class VibeService {
   String? get currentMemberId => _currentMemberId;
   String? get userName => _userName;
   bool get isHost => _isHost;
+  bool get isHostingLocally => _isHostingLocally;
   int get clockOffsetMs => _clockOffsetMs;
 
   Stream<VibeConnectionStatus> get statusStream => _statusCtrl.stream;
@@ -105,19 +111,28 @@ class VibeService {
   }
 
   // Connect to active WebSocket server
-  Future<void> connect() async {
-    if (_status == VibeConnectionStatus.connecting || _status == VibeConnectionStatus.connected) {
+  Future<void> connect({String? customUrl}) async {
+    final targetUrl = customUrl != null ? Uri.parse(customUrl) : Uri.parse(_config.activeWsUrl);
+
+    if (_status == VibeConnectionStatus.connected && _channel != null) {
       return;
     }
 
+    if (_channel != null) {
+      try {
+        await _channel!.sink.close();
+      } catch (_) {}
+      _channel = null;
+    }
+
     _setStatus(VibeConnectionStatus.connecting);
-    final url = Uri.parse(_config.activeWsUrl);
-    debugPrint('[ShreyXVibe] Connecting to: ${url.scheme}://${url.host}:${url.port}${url.path}');
+    debugPrint('[ShreyXVibe] Connecting to: $targetUrl');
 
     try {
-      _channel = WebSocketChannel.connect(url);
+      _channel = WebSocketChannel.connect(targetUrl);
       await _channel!.ready;
 
+      _channelSub?.cancel();
       _channelSub = _channel!.stream.listen(
         _onMessageReceived,
         onError: _onError,
@@ -140,6 +155,7 @@ class VibeService {
     } catch (e) {
       debugPrint('[ShreyXVibe] Connection failed: $e');
       _onError(e);
+      rethrow;
     }
   }
 
@@ -154,6 +170,12 @@ class VibeService {
   void _onError(dynamic error) {
     debugPrint('[ShreyXVibe] WebSocket error: $error');
     _setStatus(VibeConnectionStatus.error);
+    if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
+      _createRoomCompleter!.completeError(error);
+    }
+    if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+      _joinRoomCompleter!.completeError(error);
+    }
     _scheduleReconnect();
   }
 
@@ -221,6 +243,9 @@ class VibeService {
           if (payload['snapshot'] != null) {
             final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
             _roomSnapshotCtrl.add(snap);
+            if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
+              _createRoomCompleter!.complete(snap);
+            }
           }
           break;
 
@@ -228,6 +253,9 @@ class VibeService {
           _setStatus(VibeConnectionStatus.waitingApproval);
           final msg = payload['message'] as String? ?? 'Waiting for host approval...';
           _messageCtrl.add(msg);
+          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+            _joinRoomCompleter!.complete(true);
+          }
           break;
 
         case 'join_request':
@@ -247,6 +275,9 @@ class VibeService {
             final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
             _roomSnapshotCtrl.add(snap);
           }
+          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+            _joinRoomCompleter!.complete(true);
+          }
           break;
 
         case 'join_rejected':
@@ -254,6 +285,9 @@ class VibeService {
           _currentRoomCode = null;
           final reason = payload['reason'] as String? ?? 'Host declined your request.';
           _messageCtrl.add(reason);
+          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+            _joinRoomCompleter!.completeError(Exception(reason));
+          }
           break;
 
         case 'sync_state':
@@ -309,6 +343,12 @@ class VibeService {
         case 'error':
           final msg = payload['message'] as String? ?? 'An error occurred';
           _messageCtrl.add(msg);
+          if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
+            _createRoomCompleter!.completeError(Exception(msg));
+          }
+          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+            _joinRoomCompleter!.completeError(Exception(msg));
+          }
           break;
       }
     } catch (e) {
@@ -349,24 +389,64 @@ class VibeService {
 
   // --- Public Action Emitters ---
 
-  Future<void> createRoom(String hostName, String roomName) async {
+  Future<VibeRoom> createRoom(
+    String hostName,
+    String roomName, {
+    bool useLocalHost = false,
+  }) async {
     _userName = hostName;
-    await connect();
+    _createRoomCompleter = Completer<VibeRoom>();
+
+    if (useLocalHost) {
+      _isHostingLocally = true;
+      final localWsUrl = await EmbeddedVibeServer().start();
+      await connect(customUrl: localWsUrl);
+    } else {
+      _isHostingLocally = false;
+      await connect();
+    }
+
     _send('create_room', {
       'host_name': hostName,
       'room_name': roomName,
     });
+
+    return await _createRoomCompleter!.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        _setStatus(VibeConnectionStatus.error);
+        throw TimeoutException(
+          useLocalHost
+              ? 'Failed to start local host room.'
+              : 'Connection to cloud server timed out. Check your internet or switch to Direct Device Hosting.',
+        );
+      },
+    );
   }
 
-  Future<void> joinRoom(String roomCode, String userName) async {
+  Future<bool> joinRoom(String roomCode, String userName, {String? customServerUrl}) async {
     _userName = userName;
     _currentRoomCode = roomCode.toUpperCase().trim();
-    await connect();
+    _joinRoomCompleter = Completer<bool>();
+
+    if (customServerUrl != null && customServerUrl.isNotEmpty) {
+      await connect(customUrl: customServerUrl);
+    } else {
+      await connect();
+    }
+
     _send('join_room', {
       'room_code': _currentRoomCode,
       'user_name': userName,
       'session_token': _sessionToken ?? '',
     });
+
+    return await _joinRoomCompleter!.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        throw TimeoutException('Timed out joining room $roomCode. Ensure the party is active.');
+      },
+    );
   }
 
   void approveJoin(String memberId) {
@@ -421,6 +501,10 @@ class VibeService {
 
   void leaveRoom() {
     _send('leave_room', {});
+    if (_isHostingLocally) {
+      EmbeddedVibeServer().stop();
+      _isHostingLocally = false;
+    }
     _currentRoomCode = null;
     _currentMemberId = null;
     _isHost = false;
