@@ -234,7 +234,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   itemBuilder: (context, idx) {
                     final stem = _recentTracks[idx];
                     return GestureDetector(
-                      onTap: () => player.playStem(stem, queue: _recentTracks),
+                      onTap: () => player.playWithRadio(stem),
                       child: Container(
                         width: 120,
                         margin: const EdgeInsets.symmetric(horizontal: 4),

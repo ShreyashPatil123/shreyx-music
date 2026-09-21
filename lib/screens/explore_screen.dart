@@ -227,7 +227,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       final stem = search.searchResults[idx];
                       return TrackRow(
                         stem: stem,
-                        onTap: () => context.read<PlayerProvider>().playStem(stem, queue: search.searchResults),
+                        onTap: () => context.read<PlayerProvider>().playWithRadio(stem),
                       );
                     },
                   ),

@@ -5,6 +5,7 @@ import 'package:audio_service/audio_service.dart';
 import '../models/lyric_line.dart';
 import '../models/stem.dart';
 import '../services/audio_handler.dart';
+import '../services/infinite_radio_service.dart';
 import '../services/lyrics_service.dart';
 
 class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
@@ -163,6 +164,38 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _audioHandler.playStem(stem, queue: queue);
     } catch (e) {
       debugPrint('[PlayerProvider] playStem error: $e');
+      _isBuffering = false;
+      _isPlaying = false;
+      notifyListeners();
+    }
+  }
+
+  /// Plays a single song immediately and generates a queue of relatable songs
+  /// tailored specifically to this song using Infinite Radio.
+  Future<void> playWithRadio(Stem stem) async {
+    _position = Duration.zero;
+    _duration = Duration(seconds: stem.durationSec);
+    _isBuffering = true;
+    _activeStem = stem;
+    notifyListeners();
+
+    try {
+      // 1. Play selected song immediately with only itself in the queue
+      await _audioHandler.playStem(stem, queue: [stem]);
+
+      // 2. Fetch relatable songs for this track via InfiniteRadioService
+      debugPrint('[PlayerProvider] Fetching relatable songs for "${stem.title}" (${stem.sourceId})...');
+      final radioTracks = await InfiniteRadioService().fetchRadioTracks(stem.sourceId, count: 20);
+
+      if (radioTracks.isNotEmpty) {
+        final filtered = InfiniteRadioService().filterDuplicates(radioTracks, [stem]);
+        final newQueue = [stem, ...filtered];
+        _audioHandler.setQueue(newQueue);
+        debugPrint('[PlayerProvider] Queued ${filtered.length} relatable songs for "${stem.title}"');
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('[PlayerProvider] playWithRadio error: $e');
       _isBuffering = false;
       _isPlaying = false;
       notifyListeners();
