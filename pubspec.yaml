@@ -1,0 +1,45 @@
+name: shreyx_music
+description: "ShreyX Music - Autonomous High-Fidelity Music Player for Android & iOS"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Native Background Audio & Lock Screen Controls
+  just_audio: ^0.9.36
+  audio_service: ^0.18.12
+  audio_session: ^0.1.18
+
+  # On-Device YouTube Stream Extraction & Search (Pure Dart, No PC/Proxy Needed!)
+  youtube_explode_dart: ^3.1.0
+
+  # Local File Storage & Offline Caching
+  path_provider: ^2.1.2
+  shared_preferences: ^2.2.2
+
+  # Networking & Media
+  http: ^1.2.0
+  cached_network_image: ^3.3.1
+
+  # State Management
+  provider: ^6.1.1
+
+  # Formatting & UI
+  intl: ^0.19.0
+  flutter_svg: ^2.0.10+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+dependency_overrides:
+  path_provider_android: 2.2.1
+
+flutter:
+  uses-material-design: true

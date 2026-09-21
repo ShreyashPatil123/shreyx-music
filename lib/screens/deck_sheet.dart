@@ -1,0 +1,652 @@
+import 'package:just_audio/just_audio.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/stem.dart';
+import '../providers/player_provider.dart';
+import '../providers/vault_provider.dart';
+import '../theme/app_theme.dart';
+import '../widgets/song_scrubber_bar.dart';
+
+class DeckSheet extends StatefulWidget {
+  const DeckSheet({super.key});
+
+  @override
+  State<DeckSheet> createState() => _DeckSheetState();
+}
+
+enum _DeckViewMode { art, lyrics, queue }
+
+class _DeckSheetState extends State<DeckSheet> {
+  _DeckViewMode _viewMode = _DeckViewMode.art;
+  final ScrollController _lyricsScrollCtrl = ScrollController();
+  final ScrollController _queueScrollCtrl = ScrollController();
+
+  @override
+  void dispose() {
+    _lyricsScrollCtrl.dispose();
+    _queueScrollCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final player = context.watch<PlayerProvider>();
+    final vault = context.watch<VaultProvider>();
+    final stem = player.activeStem;
+
+    if (stem == null) {
+      return Container(
+        height: 220,
+        decoration: const BoxDecoration(
+          color: AppTheme.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: const Center(
+          child: Text('No song playing', style: TextStyle(color: AppTheme.textSecondary)),
+        ),
+      );
+    }
+
+    final isFav = vault.isFavorite(stem.id);
+    final isDownloaded = vault.isDownloaded(stem.id);
+    final isDownloading = vault.isDownloading(stem.id);
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.94,
+      decoration: BoxDecoration(
+        color: AppTheme.bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+        border: Border.all(color: AppTheme.borderHairline),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black87,
+            blurRadius: 40,
+            offset: Offset(0, -10),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Top Bar: Drag indicator & Header
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 30, color: Colors.white70),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                  Column(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.bgElevated,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.borderHairline),
+                        ),
+                        child: const Text(
+                          'PLAYING FROM DECK',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.2,
+                            color: AppTheme.neon,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 200),
+                        child: Text(
+                          stem.albumName ?? 'ShreyX Music',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  IconButton(
+                    icon: isDownloaded
+                        ? const Icon(Icons.check_circle_rounded, color: AppTheme.neon, size: 24)
+                        : isDownloading
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.cyan),
+                              )
+                            : const Icon(Icons.download_outlined, color: Colors.white70, size: 24),
+                    onPressed: () {
+                      if (isDownloaded) {
+                        vault.removeDownload(stem.id);
+                      } else if (!isDownloading) {
+                        vault.downloadStem(stem);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            // Main View Switcher Body: Art vs Lyrics vs Queue
+            Expanded(
+              child: _buildCurrentView(player, stem),
+            ),
+
+            // Track Details: Title, Artist, and Favorite
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 6.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          stem.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.4,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          stem.artistName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w500,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    iconSize: 28,
+                    icon: Icon(
+                      isFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                      color: isFav ? AppTheme.danger : AppTheme.textSecondary,
+                    ),
+                    onPressed: () => vault.toggleFavorite(stem),
+                  ),
+                ],
+              ),
+            ),
+
+            // Song Scrubber Bar
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: SongScrubberBar(
+                position: player.position,
+                duration: player.duration.inSeconds > 0
+                    ? player.duration
+                    : Duration(seconds: stem.durationSec),
+                onSeek: (target) {
+                  player.seek(target);
+                },
+              ),
+            ),
+
+            // Studio Spec Pills
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppTheme.bgElevated,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppTheme.borderHairline),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.graphic_eq_rounded, size: 12, color: AppTheme.neon),
+                        SizedBox(width: 5),
+                        Text(
+                          'HQ OPUS • 160 KBPS • 48 kHz',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.8,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppTheme.bgElevated,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppTheme.borderHairline),
+                    ),
+                    child: const Text(
+                      'SHREYX CORE',
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                        color: AppTheme.cyan,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Playback Controls Hub
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 8.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  // Shuffle
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 22,
+                    icon: Icon(
+                      Icons.shuffle_rounded,
+                      color: player.isShuffled ? AppTheme.neon : AppTheme.textMuted,
+                    ),
+                    onPressed: () => player.toggleShuffle(),
+                  ),
+
+                  // Seek backward -10s
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 24,
+                    icon: const Icon(Icons.replay_10_rounded, color: AppTheme.textSecondary),
+                    onPressed: () => player.seekBy(-10),
+                  ),
+
+                  // Skip Previous
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 34,
+                    icon: const Icon(Icons.skip_previous_rounded, color: Colors.white),
+                    onPressed: () => player.skipPrev(),
+                  ),
+
+                  // Primary Play / Pause Button with Glow
+                  GestureDetector(
+                    onTap: () => player.togglePlayPause(),
+                    child: Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        gradient: AppTheme.primaryGradient,
+                        shape: BoxShape.circle,
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x7700F5D4),
+                            blurRadius: 20,
+                            offset: Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Center(
+                        child: player.isBuffering
+                            ? const SizedBox(
+                                width: 26,
+                                height: 26,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.8,
+                                  color: Colors.black,
+                                ),
+                              )
+                            : Icon(
+                                player.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                size: 36,
+                                color: Colors.black,
+                              ),
+                      ),
+                    ),
+                  ),
+
+                  // Skip Next (Forward Button)
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 34,
+                    icon: const Icon(Icons.skip_next_rounded, color: Colors.white),
+                    onPressed: () => player.skipNext(),
+                  ),
+
+                  // Seek forward +10s
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 24,
+                    icon: const Icon(Icons.forward_10_rounded, color: AppTheme.textSecondary),
+                    onPressed: () => player.seekBy(10),
+                  ),
+
+                  // Loop Mode
+                  IconButton(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 22,
+                    icon: Icon(
+                      player.loopMode == LoopMode.one
+                          ? Icons.repeat_one_rounded
+                          : Icons.repeat_rounded,
+                      color: player.loopMode != LoopMode.off ? AppTheme.cyan : AppTheme.textMuted,
+                    ),
+                    onPressed: () => player.cycleLoopMode(),
+                  ),
+                ],
+              ),
+            ),
+
+            // Mode Switcher: Master Art vs Lyrics vs Up Next Queue
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0, top: 4.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Cover Art'),
+                    selected: _viewMode == _DeckViewMode.art,
+                    selectedColor: AppTheme.bgElevated,
+                    backgroundColor: Colors.transparent,
+                    side: BorderSide(
+                      color: _viewMode == _DeckViewMode.art ? AppTheme.neon : AppTheme.borderHairline,
+                    ),
+                    labelStyle: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                      color: _viewMode == _DeckViewMode.art ? AppTheme.neon : AppTheme.textSecondary,
+                    ),
+                    onSelected: (_) => setState(() => _viewMode = _DeckViewMode.art),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    avatar: const Icon(Icons.lyrics_outlined, size: 15),
+                    label: const Text('Lyrics'),
+                    selected: _viewMode == _DeckViewMode.lyrics,
+                    selectedColor: AppTheme.bgElevated,
+                    backgroundColor: Colors.transparent,
+                    side: BorderSide(
+                      color: _viewMode == _DeckViewMode.lyrics ? AppTheme.cyan : AppTheme.borderHairline,
+                    ),
+                    labelStyle: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                      color: _viewMode == _DeckViewMode.lyrics ? AppTheme.cyan : AppTheme.textSecondary,
+                    ),
+                    onSelected: (_) => setState(() => _viewMode = _DeckViewMode.lyrics),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    avatar: const Icon(Icons.queue_music_rounded, size: 15),
+                    label: Text('Queue (${player.queue.length})'),
+                    selected: _viewMode == _DeckViewMode.queue,
+                    selectedColor: AppTheme.bgElevated,
+                    backgroundColor: Colors.transparent,
+                    side: BorderSide(
+                      color: _viewMode == _DeckViewMode.queue ? AppTheme.purple : AppTheme.borderHairline,
+                    ),
+                    labelStyle: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                      color: _viewMode == _DeckViewMode.queue ? AppTheme.purple : AppTheme.textSecondary,
+                    ),
+                    onSelected: (_) => setState(() => _viewMode = _DeckViewMode.queue),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCurrentView(PlayerProvider player, Stem stem) {
+    switch (_viewMode) {
+      case _DeckViewMode.art:
+        return _buildArtworkView(stem, player.isPlaying);
+      case _DeckViewMode.lyrics:
+        return _buildLyricsView(player);
+      case _DeckViewMode.queue:
+        return _buildQueueView(player);
+    }
+  }
+
+  Widget _buildArtworkView(Stem stem, bool isPlaying) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32.0, vertical: 12.0),
+        child: AspectRatio(
+          aspectRatio: 1.0,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(28.0),
+              boxShadow: [
+                BoxShadow(
+                  color: isPlaying ? const Color(0x3300F5D4) : Colors.black54,
+                  blurRadius: 36,
+                  spreadRadius: 2,
+                  offset: const Offset(0, 12),
+                ),
+                const BoxShadow(
+                  color: Colors.black87,
+                  blurRadius: 24,
+                  offset: Offset(0, 16),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(28.0),
+              child: stem.artworkUrl.isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: stem.artworkUrl,
+                      fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(color: AppTheme.bgElevated),
+                      errorWidget: (context, url, error) => Container(
+                        color: AppTheme.bgElevated,
+                        child: const Icon(Icons.album_rounded, size: 80, color: Colors.white24),
+                      ),
+                    )
+                  : Container(
+                      color: AppTheme.bgElevated,
+                      child: const Icon(Icons.album_rounded, size: 80, color: Colors.white24),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLyricsView(PlayerProvider player) {
+    if (player.isLoadingLyrics) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppTheme.cyan),
+      );
+    }
+
+    final lyrics = player.lyrics;
+    if (lyrics == null || lyrics.isEmpty) {
+      return const Center(
+        child: Text(
+          'No lyrics found for this track.',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+        ),
+      );
+    }
+
+    if (!lyrics.isSynced) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 16.0),
+        child: Text(
+          lyrics.plainLyrics ?? '',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 16,
+            height: 1.8,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: _lyricsScrollCtrl,
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
+      itemCount: lyrics.lines.length,
+      itemBuilder: (context, idx) {
+        final line = lyrics.lines[idx];
+        final isActive = idx == player.activeLyricIndex;
+
+        return InkWell(
+          onTap: () {
+            player.seek(Duration(milliseconds: line.timeMs));
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10.0),
+            child: Text(
+              line.text,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: isActive ? 20 : 16,
+                fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
+                color: isActive ? AppTheme.neon : Colors.white24,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildQueueView(PlayerProvider player) {
+    final queue = player.queue;
+    final currentIdx = player.currentIndex;
+
+    if (queue.isEmpty) {
+      return const Center(
+        child: Text(
+          'Queue is empty',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'UP NEXT (${queue.length} TRACKS)',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                  color: AppTheme.textMuted,
+                ),
+              ),
+              const Text(
+                'Tap song to switch',
+                style: TextStyle(fontSize: 11, color: AppTheme.cyan),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            controller: _queueScrollCtrl,
+            padding: const EdgeInsets.symmetric(horizontal: 12.0),
+            itemCount: queue.length,
+            itemBuilder: (context, idx) {
+              final stem = queue[idx];
+              final isPlayingThis = idx == currentIdx;
+
+              return Container(
+                margin: const EdgeInsets.symmetric(vertical: 3),
+                decoration: BoxDecoration(
+                  color: isPlayingThis ? AppTheme.neon.withValues(alpha: 0.08) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                  border: isPlayingThis ? Border.all(color: AppTheme.neon.withValues(alpha: 0.3)) : null,
+                ),
+                child: ListTile(
+                  dense: true,
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: SizedBox(
+                      width: 38,
+                      height: 38,
+                      child: stem.artworkUrl.isNotEmpty
+                          ? CachedNetworkImage(imageUrl: stem.artworkUrl, fit: BoxFit.cover)
+                          : Container(
+                              color: AppTheme.bgElevated,
+                              child: const Icon(Icons.music_note, size: 20, color: Colors.white54),
+                            ),
+                    ),
+                  ),
+                  title: Text(
+                    stem.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: isPlayingThis ? FontWeight.w800 : FontWeight.w500,
+                      fontSize: 13.5,
+                      color: isPlayingThis ? AppTheme.neon : Colors.white,
+                    ),
+                  ),
+                  subtitle: Text(
+                    stem.artistName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11.5, color: AppTheme.textSecondary),
+                  ),
+                  trailing: isPlayingThis
+                      ? const Icon(Icons.equalizer_rounded, color: AppTheme.neon, size: 20)
+                      : Text(
+                          '#${idx + 1}',
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                        ),
+                  onTap: () => player.playFromQueue(idx),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
