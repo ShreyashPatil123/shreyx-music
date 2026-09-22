@@ -285,15 +285,24 @@ func (r *Room) ApplyPlaybackAction(action string, stem *StemData, positionMs int
 	case "play":
 		r.IsPlaying = true
 		r.PositionMs = positionMs
+		if stem != nil {
+			r.CurrentTrack = stem
+		}
 	case "pause":
 		r.IsPlaying = false
 		r.PositionMs = positionMs
+		if stem != nil && r.CurrentTrack == nil {
+			r.CurrentTrack = stem
+		}
 	case "seek":
 		r.PositionMs = positionMs
+		if stem != nil && r.CurrentTrack == nil {
+			r.CurrentTrack = stem
+		}
 	case "change_track":
 		if stem != nil {
 			r.CurrentTrack = stem
-			r.PositionMs = 0
+			r.PositionMs = positionMs
 			r.IsPlaying = true
 		}
 	case "skip_next":

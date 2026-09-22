@@ -94,14 +94,15 @@ class VibePlaybackState {
 
   factory VibePlaybackState.fromJson(Map<String, dynamic> json) {
     final rawQueue = json['queue'] as List<dynamic>? ?? [];
+    final currentTrackRaw = json['current_track'] ?? json['currentTrack'];
     return VibePlaybackState(
-      currentTrack: json['current_track'] != null
-          ? Stem.fromJson(json['current_track'] as Map<String, dynamic>)
+      currentTrack: currentTrackRaw != null
+          ? Stem.fromJson(currentTrackRaw as Map<String, dynamic>)
           : null,
-      isPlaying: json['is_playing'] as bool? ?? false,
-      positionMs: (json['position_ms'] as num?)?.toInt() ?? 0,
-      serverTimeMs: (json['server_time_ms'] as num?)?.toInt() ?? 0,
-      hostId: json['host_id'] as String? ?? '',
+      isPlaying: (json['is_playing'] ?? json['isPlaying']) as bool? ?? false,
+      positionMs: ((json['position_ms'] ?? json['positionMs']) as num?)?.toInt() ?? 0,
+      serverTimeMs: ((json['server_time_ms'] ?? json['serverTimeMs']) as num?)?.toInt() ?? 0,
+      hostId: (json['host_id'] ?? json['hostId']) as String? ?? '',
       seq: (json['seq'] as num?)?.toInt() ?? 0,
       queue: rawQueue.map((e) => Stem.fromJson(e as Map<String, dynamic>)).toList(),
     );
@@ -163,22 +164,26 @@ class VibeRoom {
     final membersRaw = json['members'] as List<dynamic>? ?? [];
     final queueRaw = json['queue'] as List<dynamic>? ?? [];
     final suggRaw = json['suggestions'] as List<dynamic>? ?? [];
+    final currentTrackRaw = json['currentTrack'] ?? json['current_track'];
+
+    final parsedQueue = queueRaw.map((e) => Stem.fromJson(e as Map<String, dynamic>)).toList();
 
     return VibeRoom(
-      code: json['roomCode'] as String? ?? '',
-      name: json['roomName'] as String? ?? 'ShreyX Party',
-      hostId: json['hostId'] as String? ?? '',
+      code: json['roomCode'] as String? ?? json['room_code'] as String? ?? '',
+      name: json['roomName'] as String? ?? json['room_name'] as String? ?? 'ShreyX Party',
+      hostId: json['hostId'] as String? ?? json['host_id'] as String? ?? '',
       members: membersRaw.map((e) => VibeMember.fromJson(e as Map<String, dynamic>)).toList(),
-      queue: queueRaw.map((e) => Stem.fromJson(e as Map<String, dynamic>)).toList(),
+      queue: parsedQueue,
       playbackState: VibePlaybackState(
-        currentTrack: json['currentTrack'] != null
-            ? Stem.fromJson(json['currentTrack'] as Map<String, dynamic>)
+        currentTrack: currentTrackRaw != null
+            ? Stem.fromJson(currentTrackRaw as Map<String, dynamic>)
             : null,
-        isPlaying: json['isPlaying'] as bool? ?? false,
-        positionMs: (json['positionMs'] as num?)?.toInt() ?? 0,
-        serverTimeMs: (json['serverTimeMs'] as num?)?.toInt() ?? 0,
-        hostId: json['hostId'] as String? ?? '',
+        isPlaying: (json['isPlaying'] ?? json['is_playing']) as bool? ?? false,
+        positionMs: ((json['positionMs'] ?? json['position_ms']) as num?)?.toInt() ?? 0,
+        serverTimeMs: ((json['serverTimeMs'] ?? json['server_time_ms']) as num?)?.toInt() ?? 0,
+        hostId: json['hostId'] as String? ?? json['host_id'] as String? ?? '',
         seq: (json['seq'] as num?)?.toInt() ?? 0,
+        queue: parsedQueue,
       ),
       suggestions: suggRaw.map((e) => VibeSongSuggestion.fromJson(e as Map<String, dynamic>)).toList(),
     );

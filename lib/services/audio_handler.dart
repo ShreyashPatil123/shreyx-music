@@ -270,6 +270,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       }
 
       if (sessionId != _currentSessionId) return;
+      await _player.setVolume(1.0);
       await _player.play();
       _normalization.applyToPlayer(_player, null);
       VaultService().recordPlay(_activeStem ?? stem);
@@ -410,15 +411,33 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() async {
+    if (_player.audioSource == null) return;
+    try {
+      if (_player.volume <= 0.05) {
+        await _player.setVolume(1.0);
+      }
+      await _player.play();
+    } catch (e) {
+      debugPrint('[AudioHandler] play error: $e');
+    }
+  }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    try {
+      await _player.pause();
+    } catch (e) {
+      debugPrint('[AudioHandler] pause error: $e');
+    }
+  }
 
   @override
   Future<void> stop() async {
     _cleanupNextPlayer();
-    await _player.stop();
+    try {
+      await _player.stop();
+    } catch (_) {}
     _activeStem = null;
     _activeStemController.add(null);
     mediaItem.add(null);
@@ -426,7 +445,14 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    if (_player.audioSource == null) return;
+    try {
+      await _player.seek(position);
+    } catch (e) {
+      debugPrint('[AudioHandler] seek error: $e');
+    }
+  }
 
   Future<void> seekBy(Duration offset) async {
     final newPos = _player.position + offset;

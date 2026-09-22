@@ -16,7 +16,9 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Playback Loop Prevention Guard
   bool _isApplyingRemoteState = false;
+  Future<void>? _activeRemoteSyncFuture;
   String? _lastBroadcastTrackId;
+  String? _lastBroadcastSourceId;
   bool? _lastBroadcastIsPlaying;
   int _lastBroadcastPositionMs = -1;
   Timer? _hostBroadcastDebounce;
@@ -132,6 +134,16 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
         _pendingJoins.clear();
         _pendingSuggestions.clear();
         _service.leaveRoom();
+      } else if (lower.contains('joined the party') && _service.isHost) {
+        // Newly approved member joined: re-broadcast current track and position
+        final active = _audioHandler.activeStem;
+        if (active != null) {
+          final posMs = _audioHandler.player.position.inMilliseconds;
+          _broadcastHostPlayback('change_track', stem: active, positionMs: posMs);
+          if (_audioHandler.player.playing) {
+            _broadcastHostPlayback('play', stem: active, positionMs: posMs);
+          }
+        }
       }
       notifyListeners();
     }));
@@ -150,9 +162,11 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _subscribeToAudioHandler() {
     _subscriptions.add(_audioHandler.activeStemStream.listen((stem) {
       if (!isInRoom || !_service.isHost || _isApplyingRemoteState) return;
-      if (stem != null && stem.id != _lastBroadcastTrackId) {
+      if (stem != null && (stem.id != _lastBroadcastTrackId || stem.sourceId != _lastBroadcastSourceId)) {
         _lastBroadcastTrackId = stem.id;
-        _broadcastHostPlayback('change_track', stem: stem, positionMs: 0);
+        _lastBroadcastSourceId = stem.sourceId;
+        final posMs = _audioHandler.player.position.inMilliseconds;
+        _broadcastHostPlayback('change_track', stem: stem, positionMs: posMs);
       }
     }));
 
@@ -195,8 +209,24 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  /// Applies remote state from server to local AudioHandler with drift correction
+  /// Applies remote state from server to local AudioHandler with sequential mutex guard
   Future<void> _applyRemotePlaybackState(VibePlaybackState state) async {
+    while (_activeRemoteSyncFuture != null) {
+      await _activeRemoteSyncFuture;
+    }
+    final completer = Completer<void>();
+    _activeRemoteSyncFuture = completer.future;
+    try {
+      await _executeApplyRemotePlaybackState(state);
+    } finally {
+      completer.complete();
+      if (_activeRemoteSyncFuture == completer.future) {
+        _activeRemoteSyncFuture = null;
+      }
+    }
+  }
+
+  Future<void> _executeApplyRemotePlaybackState(VibePlaybackState state) async {
     _isApplyingRemoteState = true;
 
     try {
@@ -215,16 +245,29 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       final targetPosMs = serverPosMs + elapsedMs;
 
-      // 2. Track matching and stream resolution
+      // 2. Robust track matching (by ID, YouTube sourceId, or title + artist)
       final currentStem = _audioHandler.activeStem;
-      final bool trackChanged = remoteTrack != null &&
-          (currentStem == null || currentStem.sourceId != remoteTrack.sourceId);
+      final bool isSameTrack = currentStem != null &&
+          remoteTrack != null &&
+          ((currentStem.id.isNotEmpty && currentStem.id == remoteTrack.id) ||
+           (currentStem.sourceId.isNotEmpty && currentStem.sourceId == remoteTrack.sourceId) ||
+           (currentStem.title.trim().toLowerCase() == remoteTrack.title.trim().toLowerCase() &&
+            currentStem.artistName.trim().toLowerCase() == remoteTrack.artistName.trim().toLowerCase()));
+
+      final bool trackChanged = remoteTrack != null && !isSameTrack;
 
       if (trackChanged) {
         debugPrint('[VibeProvider] Remote track change: "${remoteTrack.title}" at ${targetPosMs}ms');
-        await _audioHandler.playStem(remoteTrack, queue: [remoteTrack]);
+        final targetQueue = state.queue.isNotEmpty ? state.queue : [remoteTrack];
+        await _audioHandler.playStem(remoteTrack, queue: targetQueue);
+
+        // Safe duration clamp: avoid seeking past duration which triggers premature completed/stop
         if (targetPosMs > 500) {
-          await _audioHandler.seek(Duration(milliseconds: targetPosMs));
+          final maxSeekMs = (remoteTrack.durationSec > 0)
+              ? (remoteTrack.durationSec * 1000 - 2000).clamp(0, 86400000)
+              : targetPosMs;
+          final clampedSeekMs = targetPosMs.clamp(0, maxSeekMs);
+          await _audioHandler.seek(Duration(milliseconds: clampedSeekMs));
         }
         if (!isPlaying) {
           await _audioHandler.pause();
@@ -248,8 +291,12 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         if (driftMs.abs() > 2000) {
           // Large drift (> 2.0s): seek immediately to authoritative position
-          debugPrint('[VibeProvider] Large drift (${driftMs}ms). Seeking to ${targetPosMs}ms');
-          await _audioHandler.seek(Duration(milliseconds: targetPosMs));
+          final maxSeekMs = (remoteTrack.durationSec > 0)
+              ? (remoteTrack.durationSec * 1000 - 2000).clamp(0, 86400000)
+              : targetPosMs;
+          final clampedSeekMs = targetPosMs.clamp(0, maxSeekMs);
+          debugPrint('[VibeProvider] Large drift (${driftMs}ms). Seeking to ${clampedSeekMs}ms');
+          await _audioHandler.seek(Duration(milliseconds: clampedSeekMs));
         } else if (driftMs.abs() > 500) {
           // Moderate drift (0.5s – 2.0s): smooth speed correction without stutter
           final speed = driftMs < 0 ? 1.05 : 0.95;
@@ -264,7 +311,7 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint('[VibeProvider] Error applying remote state: $e');
     } finally {
       // Loop prevention debounce: allow local events to settle before re-enabling outbound broadcasting
-      Future.delayed(const Duration(milliseconds: 250), () {
+      Future.delayed(const Duration(milliseconds: 300), () {
         _isApplyingRemoteState = false;
       });
     }
@@ -281,6 +328,20 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
       roomName,
     );
     _room = room;
+
+    // Immediately broadcast active track and position if host already has a track playing/selected
+    final active = _audioHandler.activeStem;
+    if (active != null) {
+      _lastBroadcastTrackId = active.id;
+      _lastBroadcastSourceId = active.sourceId;
+      _lastBroadcastIsPlaying = _audioHandler.player.playing;
+      final posMs = _audioHandler.player.position.inMilliseconds;
+      _broadcastHostPlayback('change_track', stem: active, positionMs: posMs);
+      if (_audioHandler.player.playing) {
+        _broadcastHostPlayback('play', stem: active, positionMs: posMs);
+      }
+    }
+
     notifyListeners();
     return room;
   }
@@ -370,8 +431,32 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void approveSuggestion(String suggestionId, {required bool playNow}) {
-    _pendingSuggestions.removeWhere((s) => s.id == suggestionId);
+    final idx = _pendingSuggestions.indexWhere((s) => s.id == suggestionId);
+    Stem? suggestedStem;
+    if (idx != -1) {
+      suggestedStem = _pendingSuggestions[idx].stem;
+      _pendingSuggestions.removeAt(idx);
+    }
     _service.approveSuggestion(suggestionId, playNow ? 'play_now' : 'add_to_queue');
+
+    // If host approves suggestion as playNow, host also initiates playback
+    if (playNow && suggestedStem != null) {
+      _audioHandler.playStem(suggestedStem, queue: [suggestedStem]);
+      if (_room != null) {
+        _room = _room!.copyWith(
+          playbackState: _room!.playbackState.copyWith(
+            currentTrack: suggestedStem,
+            isPlaying: true,
+            positionMs: 0,
+          ),
+        );
+      }
+      _toastMessage = 'Now playing "${suggestedStem.title}"';
+    } else if (!playNow && suggestedStem != null) {
+      _audioHandler.addToQueue(suggestedStem);
+      _toastMessage = 'Added "${suggestedStem.title}" to queue';
+    }
+
     notifyListeners();
   }
 
