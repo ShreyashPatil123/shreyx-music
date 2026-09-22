@@ -107,6 +107,26 @@ class VibePlaybackState {
     );
   }
 
+  VibePlaybackState copyWith({
+    Stem? currentTrack,
+    bool? isPlaying,
+    int? positionMs,
+    int? serverTimeMs,
+    String? hostId,
+    int? seq,
+    List<Stem>? queue,
+  }) {
+    return VibePlaybackState(
+      currentTrack: currentTrack ?? this.currentTrack,
+      isPlaying: isPlaying ?? this.isPlaying,
+      positionMs: positionMs ?? this.positionMs,
+      serverTimeMs: serverTimeMs ?? this.serverTimeMs,
+      hostId: hostId ?? this.hostId,
+      seq: seq ?? this.seq,
+      queue: queue ?? this.queue,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'current_track': currentTrack?.toJson(),
         'is_playing': isPlaying,

@@ -311,6 +311,10 @@ func (r *Room) ApplyPlaybackAction(action string, stem *StemData, positionMs int
 		if stem != nil {
 			r.Queue = append(r.Queue, *stem)
 		}
+	case "queue_play_next":
+		if stem != nil {
+			r.Queue = append([]StemData{*stem}, r.Queue...)
+		}
 	case "queue_remove":
 		if idx != nil && *idx >= 0 && *idx < len(r.Queue) {
 			i := *idx

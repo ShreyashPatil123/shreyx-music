@@ -3,6 +3,8 @@ package com.shreyx.player
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import android.content.Context
+import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -29,25 +31,54 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private val scope = CoroutineScope(Dispatchers.Main)
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.shreyx.player/native_stream")
             .setMethodCallHandler { call, result ->
-                if (call.method == "resolveYouTubeStream") {
-                    val videoId = call.argument<String>("videoId") ?: ""
-                    scope.launch {
-                        val response = withContext(Dispatchers.IO) {
-                            resolve(videoId)
+                when (call.method) {
+                    "resolveYouTubeStream" -> {
+                        val videoId = call.argument<String>("videoId") ?: ""
+                        scope.launch {
+                            val response = withContext(Dispatchers.IO) {
+                                resolve(videoId)
+                            }
+                            result.success(response)
                         }
-                        result.success(response)
                     }
-                } else if (call.method == "minimizeApp") {
-                    moveTaskToBack(true)
-                    result.success(true)
-                } else {
-                    result.notImplemented()
+                    "minimizeApp" -> {
+                        moveTaskToBack(true)
+                        result.success(true)
+                    }
+                    "acquireVibeWakeLock" -> {
+                        try {
+                            if (wakeLock == null || wakeLock?.isHeld != true) {
+                                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                                wakeLock = pm.newWakeLock(
+                                    PowerManager.PARTIAL_WAKE_LOCK,
+                                    "ShreyXVibe::Room"
+                                )
+                                wakeLock?.acquire(4 * 60 * 60 * 1000L) // 4-hour max timeout
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
+                    "releaseVibeWakeLock" -> {
+                        try {
+                            if (wakeLock?.isHeld == true) {
+                                wakeLock?.release()
+                            }
+                            wakeLock = null
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
+                    else -> result.notImplemented()
                 }
             }
     }

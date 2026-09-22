@@ -29,6 +29,16 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isInRoom => _room != null;
   bool get isConnected => _service.status == VibeConnectionStatus.inRoom || _service.status == VibeConnectionStatus.connected;
   bool get isReconnecting => _room != null && !isConnected;
+
+  /// Only show the reconnecting banner if we've been disconnected for > 3 seconds.
+  /// This hides the banner during fast reconnects (e.g., screen unlock / app resume).
+  bool get showReconnectingBanner {
+    if (!isReconnecting) return false;
+    final disc = _service.disconnectedAt;
+    if (disc == null) return false;
+    return DateTime.now().difference(disc).inSeconds >= 3;
+  }
+
   bool get isHost => _service.isHost;
   bool get isWaitingApproval => _service.status == VibeConnectionStatus.waitingApproval;
   VibeConnectionStatus get connectionStatus => _service.status;
@@ -297,6 +307,60 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   void suggestSong(Stem stem) {
     _service.suggestSong(stem);
     _toastMessage = 'Song requested! Waiting for host approval.';
+    notifyListeners();
+  }
+
+  /// Host directly plays a song immediately across the party
+  Future<void> hostPlayNow(Stem stem) async {
+    if (!isHost) return;
+    try {
+      await _audioHandler.playStem(stem, queue: [stem]);
+      _service.sendPlaybackAction('change_track', stem: stem, positionMs: 0);
+      if (_room != null) {
+        _room = _room!.copyWith(
+          playbackState: _room!.playbackState.copyWith(
+            currentTrack: stem,
+            isPlaying: true,
+            positionMs: 0,
+          ),
+        );
+      }
+      _toastMessage = 'Now playing "${stem.title}"';
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[VibeProvider] hostPlayNow error: $e');
+    }
+  }
+
+  /// Host directly appends a song to the party queue
+  void hostAddToQueue(Stem stem) {
+    if (!isHost) return;
+    _audioHandler.addToQueue(stem);
+    _service.sendPlaybackAction('queue_add', stem: stem);
+    if (_room != null) {
+      final newQueue = [..._room!.queue, stem];
+      _room = _room!.copyWith(
+        queue: newQueue,
+        playbackState: _room!.playbackState.copyWith(queue: newQueue),
+      );
+    }
+    _toastMessage = 'Added "${stem.title}" to party queue';
+    notifyListeners();
+  }
+
+  /// Host directly sets a song to play next in the party
+  void hostPlayNext(Stem stem) {
+    if (!isHost) return;
+    _audioHandler.playNext(stem);
+    _service.sendPlaybackAction('queue_play_next', stem: stem);
+    if (_room != null) {
+      final newQueue = [stem, ..._room!.queue];
+      _room = _room!.copyWith(
+        queue: newQueue,
+        playbackState: _room!.playbackState.copyWith(queue: newQueue),
+      );
+    }
+    _toastMessage = 'Playing "${stem.title}" next in party';
     notifyListeners();
   }
 

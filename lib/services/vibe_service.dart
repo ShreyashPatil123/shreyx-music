@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/stem.dart';
@@ -19,6 +20,7 @@ class VibeService {
 
   VibeConnectionStatus _status = VibeConnectionStatus.disconnected;
   final VibeConfig _config = const VibeConfig();
+  static const _nativeChannel = MethodChannel('com.shreyx.player/native_stream');
 
   String? _sessionToken;
   String? _currentRoomCode;
@@ -33,6 +35,9 @@ class VibeService {
   int _clockOffsetMs = 0;
   int _lastSyncedSeq = -1;
   int _lastSyncedServerTimeMs = 0;
+
+  // Track when disconnected for delayed reconnecting banner
+  DateTime? _disconnectedAt;
 
   // Stream Controllers
   final _statusCtrl = StreamController<VibeConnectionStatus>.broadcast();
@@ -51,6 +56,7 @@ class VibeService {
   String? get userName => _userName;
   bool get isHost => _isHost;
   int get clockOffsetMs => _clockOffsetMs;
+  DateTime? get disconnectedAt => _disconnectedAt;
 
   Stream<VibeConnectionStatus> get statusStream => _statusCtrl.stream;
   Stream<VibePlaybackState> get syncStateStream => _syncStateCtrl.stream;
@@ -64,11 +70,18 @@ class VibeService {
     final prefs = await SharedPreferences.getInstance();
     _sessionToken = prefs.getString('vibe_session_token');
     _userName = prefs.getString('vibe_user_name') ?? 'Music Lover';
+    _currentRoomCode = prefs.getString('vibe_room_code');
   }
 
   void _setStatus(VibeConnectionStatus s) {
     if (_status != s) {
       _status = s;
+      // Track disconnect timestamp for delayed reconnecting banner
+      if (s == VibeConnectionStatus.disconnected || s == VibeConnectionStatus.error) {
+        _disconnectedAt ??= DateTime.now();
+      } else if (s == VibeConnectionStatus.connected || s == VibeConnectionStatus.inRoom) {
+        _disconnectedAt = null;
+      }
       _statusCtrl.add(s);
     }
   }
@@ -226,6 +239,7 @@ class VibeService {
           _isHost = true;
           _reconnectAttempts = 0;
           _saveSession();
+          _acquireWakeLock();
           _setStatus(VibeConnectionStatus.inRoom);
 
           if (payload['snapshot'] != null) {
@@ -257,6 +271,7 @@ class VibeService {
           _isHost = payload['is_host'] as bool? ?? false;
           _reconnectAttempts = 0;
           _saveSession();
+          _acquireWakeLock();
           _setStatus(VibeConnectionStatus.inRoom);
 
           if (payload['snapshot'] != null) {
@@ -315,6 +330,8 @@ class VibeService {
         case 'kicked':
           final reason = payload['reason'] as String? ?? 'Removed from room';
           _currentRoomCode = null;
+          _releaseWakeLock();
+          _clearSavedRoomCode();
           _setStatus(VibeConnectionStatus.connected);
           _kickedCtrl.add(reason);
           break;
@@ -366,12 +383,38 @@ class VibeService {
   }
 
   Future<void> _saveSession() async {
+    final prefs = await SharedPreferences.getInstance();
     if (_sessionToken != null) {
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setString('vibe_session_token', _sessionToken!);
-      if (_userName != null) {
-        await prefs.setString('vibe_user_name', _userName!);
-      }
+    }
+    if (_userName != null) {
+      await prefs.setString('vibe_user_name', _userName!);
+    }
+    if (_currentRoomCode != null) {
+      await prefs.setString('vibe_room_code', _currentRoomCode!);
+    }
+  }
+
+  Future<void> _clearSavedRoomCode() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('vibe_room_code');
+  }
+
+  Future<void> _acquireWakeLock() async {
+    try {
+      await _nativeChannel.invokeMethod('acquireVibeWakeLock');
+      debugPrint('[ShreyXVibe] Acquired partial wake lock for Vibe room');
+    } catch (e) {
+      debugPrint('[ShreyXVibe] Failed to acquire wake lock: $e');
+    }
+  }
+
+  Future<void> _releaseWakeLock() async {
+    try {
+      await _nativeChannel.invokeMethod('releaseVibeWakeLock');
+      debugPrint('[ShreyXVibe] Released partial wake lock');
+    } catch (e) {
+      debugPrint('[ShreyXVibe] Failed to release wake lock: $e');
     }
   }
 
@@ -479,6 +522,8 @@ class VibeService {
     _currentMemberId = null;
     _isHost = false;
     _reconnectTimer?.cancel();
+    _releaseWakeLock();
+    _clearSavedRoomCode();
     _setStatus(VibeConnectionStatus.connected);
   }
 

@@ -127,7 +127,7 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
       ),
       body: Column(
         children: [
-          if (vibe.isReconnecting)
+          if (vibe.showReconnectingBanner)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 16),
@@ -243,8 +243,8 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: AppTheme.neon,
         foregroundColor: Colors.black,
-        icon: const Icon(Icons.add_rounded, size: 20),
-        label: const Text('Request Song', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+        icon: Icon(isHost ? Icons.library_add_rounded : Icons.add_rounded, size: 20),
+        label: Text(isHost ? 'Add Song' : 'Request Song', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
         onPressed: () => VibeRequestSheet.show(context),
       ),
     );
