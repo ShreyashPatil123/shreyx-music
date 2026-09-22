@@ -80,6 +80,14 @@ func (c *Client) Close() {
 	}
 }
 
+// CloseGracefully allows buffered messages in c.send to flush to client before closing socket
+func (c *Client) CloseGracefully(delay time.Duration) {
+	go func() {
+		time.Sleep(delay)
+		c.Close()
+	}()
+}
+
 func (c *Client) ReadPump() {
 	defer func() {
 		c.hub.Unregister(c)

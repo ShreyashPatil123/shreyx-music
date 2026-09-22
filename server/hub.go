@@ -17,6 +17,21 @@ type SessionInfo struct {
 	ExpiresAt   time.Time
 }
 
+func sanitizeString(val string, maxLen int) string {
+	s := strings.TrimSpace(val)
+	var sb strings.Builder
+	for _, r := range s {
+		if r >= 32 && r != 127 {
+			sb.WriteRune(r)
+		}
+	}
+	res := sb.String()
+	if len(res) > maxLen {
+		return res[:maxLen]
+	}
+	return res
+}
+
 type Hub struct {
 	mu           sync.RWMutex
 	rooms        map[string]*Room        // roomCode -> Room
@@ -77,6 +92,11 @@ func (h *Hub) Unregister(c *Client) {
 		}
 
 		wasHost, newHost := room.RemoveMember(mID)
+		if wasHost && newHost != nil {
+			if sess, okSess := h.sessions[newHost.sessionToken]; okSess {
+				sess.IsHost = true
+			}
+		}
 		h.mu.Unlock()
 
 		log.Printf("[VibeHub] Member %s grace period expired in room %s (wasHost=%v)", mID, rCode, wasHost)
@@ -228,11 +248,11 @@ func (h *Hub) handleCreateRoom(c *Client, p CreateRoomPayload) {
 		}
 	}
 
-	c.name = strings.TrimSpace(p.HostName)
+	c.name = sanitizeString(p.HostName, 32)
 	if c.name == "" {
 		c.name = "Host"
 	}
-	roomName := strings.TrimSpace(p.RoomName)
+	roomName := sanitizeString(p.RoomName, 48)
 	if roomName == "" {
 		roomName = c.name + "'s Room"
 	}
@@ -262,7 +282,11 @@ func (h *Hub) handleCreateRoom(c *Client, p CreateRoomPayload) {
 }
 
 func (h *Hub) handleJoinRoom(c *Client, p JoinRoomPayload) {
-	code := strings.ToUpper(strings.TrimSpace(p.RoomCode))
+	code := strings.ToUpper(sanitizeString(p.RoomCode, 6))
+	if len(code) != 6 {
+		c.SendJSON(TypeError, ErrorPayload{Code: "INVALID_CODE", Message: "Room code must be exactly 6 characters."})
+		return
+	}
 
 	h.mu.Lock()
 	room, ok := h.rooms[code]
@@ -316,7 +340,7 @@ func (h *Hub) handleJoinRoom(c *Client, p JoinRoomPayload) {
 
 	h.mu.Unlock()
 
-	c.name = strings.TrimSpace(p.UserName)
+	c.name = sanitizeString(p.UserName, 32)
 	if c.name == "" {
 		c.name = "Guest"
 	}
@@ -403,7 +427,7 @@ func (h *Hub) handleRejectJoin(c *Client, p RejectJoinPayload) {
 			reason = "Host declined your join request."
 		}
 		rejectedClient.SendJSON(TypeJoinRejected, JoinRejectedPayload{Reason: reason})
-		rejectedClient.Close()
+		rejectedClient.CloseGracefully(150 * time.Millisecond)
 	}
 }
 
@@ -439,8 +463,18 @@ func (h *Hub) handleSuggestSong(c *Client, p SuggestSongPayload) {
 	if !ok {
 		return
 	}
+	p.Stem.Title = sanitizeString(p.Stem.Title, 128)
+	p.Stem.ArtistName = sanitizeString(p.Stem.ArtistName, 128)
+	p.Stem.SourceID = sanitizeString(p.Stem.SourceID, 64)
+	if p.Stem.Title == "" {
+		p.Stem.Title = "Unknown Title"
+	}
 
-	sugg := room.AddSuggestion(p.Stem, c)
+	sugg, err := room.AddSuggestion(p.Stem, c)
+	if err != nil {
+		c.SendJSON(TypeError, ErrorPayload{Code: "SUGGESTION_LIMIT", Message: err.Error()})
+		return
+	}
 	log.Printf("[VibeHub] New song suggestion in room %s by %s: %s", room.Code, c.name, p.Stem.Title)
 
 	// Send suggestion only to host
@@ -521,6 +555,13 @@ func (h *Hub) handleLeaveRoom(c *Client) {
 
 	if ok && memberID != "" {
 		wasHost, newHost := room.RemoveMember(memberID)
+		if wasHost && newHost != nil {
+			h.mu.Lock()
+			if sess, okSess := h.sessions[newHost.sessionToken]; okSess {
+				sess.IsHost = true
+			}
+			h.mu.Unlock()
+		}
 		log.Printf("[VibeHub] Member %s explicitly left room %s (wasHost=%v)", memberID, roomCode, wasHost)
 
 		var newHostID string
@@ -550,24 +591,42 @@ func (h *Hub) handleKickMember(c *Client, p KickMemberPayload) {
 		return
 	}
 
-	h.mu.RLock()
+	h.mu.Lock()
 	room, ok := h.rooms[c.roomCode]
-	h.mu.RUnlock()
-
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 
 	room.mu.RLock()
 	target, exists := room.Members[p.MemberID]
+	if !exists {
+		target = room.PendingJoins[p.MemberID]
+	}
 	room.mu.RUnlock()
 
-	if exists {
+	// Immediately remove member from room and permanently revoke session
+	room.RemoveMember(p.MemberID)
+	if target != nil {
+		delete(h.sessions, target.sessionToken)
+		delete(h.clients, target)
+		target.roomCode = ""
+		target.isApproved = false
+		target.isHost = false
+	}
+	h.mu.Unlock()
+
+	if target != nil {
 		target.SendJSON(TypeKicked, map[string]string{
 			"reason": "You were removed from the room by the host.",
 		})
-		target.Close()
+		target.CloseGracefully(150 * time.Millisecond)
 	}
+
+	room.BroadcastApproved(TypeMemberLeft, map[string]string{
+		"member_id":   p.MemberID,
+		"new_host_id": "",
+	})
 }
 
 func (h *Hub) handleTransferHost(c *Client, p TransferHostPayload) {
@@ -575,18 +634,30 @@ func (h *Hub) handleTransferHost(c *Client, p TransferHostPayload) {
 		return
 	}
 
-	h.mu.RLock()
+	h.mu.Lock()
 	room, ok := h.rooms[c.roomCode]
-	h.mu.RUnlock()
-
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 
 	if room.TransferHost(p.NewHostID) {
+		// Update persistent sessions so reconnecting preserves new host role
+		if oldSess, okOld := h.sessions[c.sessionToken]; okOld {
+			oldSess.IsHost = false
+		}
+		if newClient, okNew := room.Members[p.NewHostID]; okNew {
+			if newSess, okSess := h.sessions[newClient.sessionToken]; okSess {
+				newSess.IsHost = true
+			}
+		}
+		h.mu.Unlock()
+
 		room.BroadcastApproved(TypeHostTransferred, map[string]string{
 			"new_host_id": p.NewHostID,
 		})
+	} else {
+		h.mu.Unlock()
 	}
 }
 

@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
-const charset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // omits I, O, 0, 1 for readability
+const (
+	charset              = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // omits I, O, 0, 1 for readability
+	MaxQueueLength       = 100
+	MaxRoomSuggestions   = 50
+	MaxMemberSuggestions = 5
+)
 
 func GenerateRoomCode() string {
 	b := make([]byte, 6)
@@ -215,6 +220,7 @@ func (r *Room) RejectMember(memberID string, reason string) *Client {
 	}
 
 	delete(r.PendingJoins, memberID)
+	client.roomCode = ""
 	r.Touch()
 	return client
 }
@@ -317,11 +323,11 @@ func (r *Room) ApplyPlaybackAction(action string, stem *StemData, positionMs int
 		// Reset to start of current track
 		r.PositionMs = 0
 	case "queue_add":
-		if stem != nil {
+		if stem != nil && len(r.Queue) < MaxQueueLength {
 			r.Queue = append(r.Queue, *stem)
 		}
 	case "queue_play_next":
-		if stem != nil {
+		if stem != nil && len(r.Queue) < MaxQueueLength {
 			r.Queue = append([]StemData{*stem}, r.Queue...)
 		}
 	case "queue_remove":
@@ -353,9 +359,23 @@ func (r *Room) ApplyPlaybackAction(action string, stem *StemData, positionMs int
 	}
 }
 
-func (r *Room) AddSuggestion(stem StemData, suggestedBy *Client) *VibeSongSuggestion {
+func (r *Room) AddSuggestion(stem StemData, suggestedBy *Client) (*VibeSongSuggestion, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if len(r.Suggestions) >= MaxRoomSuggestions {
+		return nil, fmt.Errorf("room suggestion limit reached (%d max)", MaxRoomSuggestions)
+	}
+
+	memberCount := 0
+	for _, s := range r.Suggestions {
+		if s.SuggestedBy == suggestedBy.memberID {
+			memberCount++
+		}
+	}
+	if memberCount >= MaxMemberSuggestions {
+		return nil, fmt.Errorf("you have reached your pending suggestion limit (%d max)", MaxMemberSuggestions)
+	}
 
 	id := GenerateID("sug")
 	sugg := &VibeSongSuggestion{
@@ -368,7 +388,7 @@ func (r *Room) AddSuggestion(stem StemData, suggestedBy *Client) *VibeSongSugges
 
 	r.Suggestions[id] = sugg
 	r.Touch()
-	return sugg
+	return sugg, nil
 }
 
 func (r *Room) ResolveSuggestion(suggestionID, action string) (*StemData, bool) {
@@ -391,7 +411,9 @@ func (r *Room) ResolveSuggestion(suggestionID, action string) (*StemData, bool) 
 		r.PositionMs = 0
 		r.IsPlaying = true
 	} else if action == "add_to_queue" {
-		r.Queue = append(r.Queue, stem)
+		if len(r.Queue) < MaxQueueLength {
+			r.Queue = append(r.Queue, stem)
+		}
 		r.Seq++
 		r.ServerTimeMs = nowMillis()
 	}

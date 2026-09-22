@@ -236,17 +236,36 @@ class StreamResolver {
     final audioStreams = manifest.audioOnly;
     if (audioStreams.isEmpty) throw Exception('No audio streams available');
 
-    // Prioritize high-fidelity Opus (typically ~160kbps, lossless perceptual quality)
+    // Platform-aware stream selection:
+    // Apple AVPlayer (iOS/macOS) requires MP4/M4A (AAC) containers and fails on WebM/Opus.
+    // Android ExoPlayer supports both WebM/Opus and MP4/AAC.
+    final bool isApple = !kIsWeb && (Platform.isIOS || Platform.isMacOS);
+
     final sortedAudio = audioStreams.toList()..sort((a, b) {
-      final aIsOpus = a.codec.mimeType.contains('webm') || a.codec.mimeType.contains('opus');
-      final bIsOpus = b.codec.mimeType.contains('webm') || b.codec.mimeType.contains('opus');
-      if (aIsOpus && !bIsOpus && a.bitrate.kiloBitsPerSecond >= 120) return -1;
-      if (!aIsOpus && bIsOpus && b.bitrate.kiloBitsPerSecond >= 120) return 1;
-      return b.bitrate.compareTo(a.bitrate);
+      if (isApple) {
+        final aIsMp4 = a.container.name.toLowerCase() == 'mp4' ||
+            a.codec.mimeType.contains('mp4') ||
+            a.codec.mimeType.contains('m4a') ||
+            a.codec.mimeType.contains('aac');
+        final bIsMp4 = b.container.name.toLowerCase() == 'mp4' ||
+            b.codec.mimeType.contains('mp4') ||
+            b.codec.mimeType.contains('m4a') ||
+            b.codec.mimeType.contains('aac');
+        if (aIsMp4 && !bIsMp4) return -1;
+        if (!aIsMp4 && bIsMp4) return 1;
+        return b.bitrate.compareTo(a.bitrate);
+      } else {
+        // Prioritize high-fidelity Opus on Android (typically ~160kbps, lossless perceptual quality)
+        final aIsOpus = a.codec.mimeType.contains('webm') || a.codec.mimeType.contains('opus');
+        final bIsOpus = b.codec.mimeType.contains('webm') || b.codec.mimeType.contains('opus');
+        if (aIsOpus && !bIsOpus && a.bitrate.kiloBitsPerSecond >= 120) return -1;
+        if (!aIsOpus && bIsOpus && b.bitrate.kiloBitsPerSecond >= 120) return 1;
+        return b.bitrate.compareTo(a.bitrate);
+      }
     });
 
     final bestAudio = sortedAudio.first;
-    debugPrint('[StreamResolver] 🎵 High-fidelity stream chosen: ${bestAudio.codec.mimeType} @ ${bestAudio.bitrate.kiloBitsPerSecond} kbps');
+    debugPrint('[StreamResolver] 🎵 Stream chosen (${isApple ? 'iOS-AAC' : 'Opus'}): ${bestAudio.codec.mimeType} @ ${bestAudio.bitrate.kiloBitsPerSecond} kbps');
 
     return ResolvedStream(
       uri: bestAudio.url.toString(),
@@ -274,7 +293,17 @@ class StreamResolver {
 
     if (audioFormats.isEmpty) throw Exception('No audio formats');
 
+    final bool isApple = !kIsWeb && (Platform.isIOS || Platform.isMacOS);
+
     audioFormats.sort((a, b) {
+      final aType = (a['type']?.toString() ?? a['mimeType']?.toString() ?? '').toLowerCase();
+      final bType = (b['type']?.toString() ?? b['mimeType']?.toString() ?? '').toLowerCase();
+      if (isApple) {
+        final aIsMp4 = aType.contains('mp4') || aType.contains('m4a') || aType.contains('aac');
+        final bIsMp4 = bType.contains('mp4') || bType.contains('m4a') || bType.contains('aac');
+        if (aIsMp4 && !bIsMp4) return -1;
+        if (!aIsMp4 && bIsMp4) return 1;
+      }
       final bBitrate = int.tryParse(b['bitrate']?.toString() ?? '0') ?? 0;
       final aBitrate = int.tryParse(a['bitrate']?.toString() ?? '0') ?? 0;
       return bBitrate.compareTo(aBitrate);

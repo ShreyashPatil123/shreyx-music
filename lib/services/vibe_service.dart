@@ -461,20 +461,22 @@ class VibeService {
   }
 
   Future<void> _acquireWakeLock() async {
+    if (kIsWeb) return;
     try {
       await _nativeChannel.invokeMethod('acquireVibeWakeLock');
-      debugPrint('[ShreyXVibe] Acquired partial wake lock for Vibe room');
+      debugPrint('[ShreyXVibe] Acquired background execution guard for Vibe room');
     } catch (e) {
-      debugPrint('[ShreyXVibe] Failed to acquire wake lock: $e');
+      debugPrint('[ShreyXVibe] Failed to acquire background guard: $e');
     }
   }
 
   Future<void> _releaseWakeLock() async {
+    if (kIsWeb) return;
     try {
       await _nativeChannel.invokeMethod('releaseVibeWakeLock');
-      debugPrint('[ShreyXVibe] Released partial wake lock');
+      debugPrint('[ShreyXVibe] Released background execution guard');
     } catch (e) {
-      debugPrint('[ShreyXVibe] Failed to release wake lock: $e');
+      debugPrint('[ShreyXVibe] Failed to release background guard: $e');
     }
   }
 
