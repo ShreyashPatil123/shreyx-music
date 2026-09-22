@@ -39,8 +39,6 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^3.0.0
 
-dependency_overrides:
-  path_provider_android: 2.2.1
 
 flutter:
   uses-material-design: true
