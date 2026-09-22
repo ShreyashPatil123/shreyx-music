@@ -27,19 +27,28 @@ class Playlist {
         'createdAt': createdAt.toIso8601String(),
       };
 
-  factory Playlist.fromJson(Map<String, dynamic> json) => Playlist(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        description: json['description'] as String? ?? '',
-        artworkUrl: json['artworkUrl'] as String? ?? '',
-        stems: (json['stems'] as List<dynamic>?)
-                ?.map((s) => Stem.fromJson(s as Map<String, dynamic>))
-                .toList() ??
-            [],
-        createdAt: json['createdAt'] != null
-            ? DateTime.tryParse(json['createdAt'] as String) ?? DateTime.now()
-            : DateTime.now(),
-      );
+  factory Playlist.fromJson(Map<String, dynamic> json) {
+    final rawStems = json['stems'] as List<dynamic>? ?? [];
+    final List<Stem> parsedStems = [];
+    for (final s in rawStems) {
+      if (s is Map<String, dynamic>) {
+        try {
+          parsedStems.add(Stem.fromJson(s));
+        } catch (_) {}
+      }
+    }
+
+    return Playlist(
+      id: json['id']?.toString() ?? 'pl_${DateTime.now().millisecondsSinceEpoch}',
+      name: json['name']?.toString() ?? 'Untitled Playlist',
+      description: json['description']?.toString() ?? '',
+      artworkUrl: json['artworkUrl']?.toString() ?? '',
+      stems: parsedStems,
+      createdAt: json['createdAt'] != null
+          ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()
+          : DateTime.now(),
+    );
+  }
 }
 
 class DownloadedPlaylistGroup {

@@ -22,6 +22,8 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _hostBroadcastDebounce;
   Timer? _speedResetTimer;
 
+  DateTime? _resumedAt;
+
   // Subscriptions
   final List<StreamSubscription> _subscriptions = [];
 
@@ -30,10 +32,13 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isConnected => _service.status == VibeConnectionStatus.inRoom || _service.status == VibeConnectionStatus.connected;
   bool get isReconnecting => _room != null && !isConnected;
 
-  /// Only show the reconnecting banner if we've been disconnected for > 3 seconds.
-  /// This hides the banner during fast reconnects (e.g., screen unlock / app resume).
+  /// Only show the reconnecting banner if we've been disconnected for > 3 seconds,
+  /// and allow a 3-second grace period after app resume so fast reconnects never flash the banner.
   bool get showReconnectingBanner {
     if (!isReconnecting) return false;
+    if (_resumedAt != null && DateTime.now().difference(_resumedAt!).inSeconds < 3) {
+      return false;
+    }
     final disc = _service.disconnectedAt;
     if (disc == null) return false;
     return DateTime.now().difference(disc).inSeconds >= 3;
@@ -58,13 +63,10 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _resumedAt = DateTime.now();
       if (_room != null || _service.currentRoomCode != null) {
-        debugPrint('[ShreyXVibe] App resumed while in room (${_room?.code ?? _service.currentRoomCode}). Verifying connection...');
-        if (!isConnected) {
-          _service.connect();
-        } else {
-          _service.requestSync();
-        }
+        debugPrint('[ShreyXVibe] App resumed while in room (${_room?.code ?? _service.currentRoomCode}). Fast reconnecting...');
+        _service.reconnectNow();
       }
     }
   }
@@ -124,10 +126,12 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _subscriptions.add(_service.messageStream.listen((msg) {
       _toastMessage = msg;
-      if (msg.toLowerCase().contains('not found') || msg.toLowerCase().contains('room does not exist') || msg.toLowerCase().contains('closed') || msg.toLowerCase().contains('ended')) {
+      final lower = msg.toLowerCase();
+      if (lower.contains('not found') || lower.contains('room does not exist') || lower.contains('closed') || lower.contains('ended')) {
         _room = null;
         _pendingJoins.clear();
         _pendingSuggestions.clear();
+        _service.leaveRoom();
       }
       notifyListeners();
     }));
@@ -137,6 +141,7 @@ class VibeProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pendingJoins.clear();
       _pendingSuggestions.clear();
       _toastMessage = reason;
+      _service.leaveRoom();
       notifyListeners();
     }));
   }

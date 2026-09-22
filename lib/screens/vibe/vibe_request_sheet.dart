@@ -31,6 +31,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   final LinkResolverService _linkResolver = LinkResolverService();
+  final Set<String> _requestedStemIds = {};
 
   Playlist? _selectedPlaylist;
   bool _isResolvingLink = false;
@@ -41,15 +42,17 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        setState(() {});
+      if (_tabController.indexIsChanging || _tabController.index != 0) {
+        _focusNode.unfocus();
       }
+      if (mounted) setState(() {});
     });
 
     // Clear stale search results from ExploreScreen so we start fresh
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<SearchProvider>().clearSearch();
-      _focusNode.requestFocus();
+      if (mounted) {
+        context.read<SearchProvider>().clearSearch();
+      }
     });
   }
 
@@ -64,6 +67,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
   void _triggerSearch(String query, SearchProvider search) {
     final text = query.trim();
     if (text.isEmpty) return;
+    _focusNode.unfocus();
 
     if (_linkResolver.isSupported(text)) {
       _resolveAndHandleLink(text);
@@ -113,10 +117,13 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
 
   void _showSuggestedToast(String title) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final sm = ScaffoldMessenger.of(context);
+    sm.hideCurrentSnackBar();
+    sm.showSnackBar(
       SnackBar(
         backgroundColor: AppTheme.bgElevated,
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
           side: const BorderSide(color: AppTheme.cyan, width: 0.8),
@@ -137,6 +144,35 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
     );
   }
 
+  void _showToast(String message) {
+    if (!mounted) return;
+    final sm = ScaffoldMessenger.of(context);
+    sm.hideCurrentSnackBar();
+    sm.showSnackBar(
+      SnackBar(
+        backgroundColor: AppTheme.bgElevated,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppTheme.neon, width: 0.8),
+        ),
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: AppTheme.neon, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final search = context.watch<SearchProvider>();
@@ -144,134 +180,148 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
     final vault = context.watch<VaultProvider>();
     final isHost = vibe.isHost;
 
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.88,
-      decoration: const BoxDecoration(
-        color: AppTheme.bg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        border: Border(top: BorderSide(color: AppTheme.borderHairline)),
-      ),
-      child: SafeArea(
-        child: Column(
-          children: [
-            // Drag handle
-            Container(
-              margin: const EdgeInsets.only(top: 8, bottom: 4),
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
+    return PopScope(
+      canPop: _selectedPlaylist == null,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_selectedPlaylist != null) {
+          setState(() => _selectedPlaylist = null);
+        }
+      },
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.88,
+        decoration: const BoxDecoration(
+          color: AppTheme.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          border: Border(top: BorderSide(color: AppTheme.borderHairline)),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // Drag handle
+              Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
 
-            // Top Header
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
-              child: Row(
-                children: [
-                  Icon(
-                    isHost ? Icons.library_music_rounded : Icons.queue_music_rounded,
-                    color: isHost ? AppTheme.neon : AppTheme.cyan,
-                    size: 22,
+              // Top Header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      isHost ? Icons.library_music_rounded : Icons.queue_music_rounded,
+                      color: isHost ? AppTheme.neon : AppTheme.cyan,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isHost ? 'Add Music to Party' : 'Request Song for Party',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            isHost
+                                ? 'Play directly, play next, or add to queue'
+                                : 'Suggest songs to the room host',
+                            style: TextStyle(
+                              color: isHost
+                                  ? AppTheme.neon.withValues(alpha: 0.8)
+                                  : AppTheme.cyan.withValues(alpha: 0.8),
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Navigation Tabs: Search | Liked | Playlists
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                child: Container(
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: AppTheme.bgElevated,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppTheme.borderHairline),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          isHost ? 'Add Music to Party' : 'Request Song for Party',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: TabBar(
+                      controller: _tabController,
+                      indicator: BoxDecoration(
+                        color: isHost
+                            ? AppTheme.neon.withValues(alpha: 0.2)
+                            : AppTheme.cyan.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isHost ? AppTheme.neon : AppTheme.cyan,
+                          width: 1,
+                        ),
+                      ),
+                      indicatorSize: TabBarIndicatorSize.tab,
+                      labelColor: isHost ? AppTheme.neon : AppTheme.cyan,
+                      unselectedLabelColor: AppTheme.textMuted,
+                      labelStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                      dividerColor: Colors.transparent,
+                      tabs: [
+                        const Tab(
+                          height: 40,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.search_rounded, size: 15),
+                              SizedBox(width: 6),
+                              Text('Search'),
+                            ],
                           ),
                         ),
-                        Text(
-                          isHost
-                              ? 'Play directly, play next, or add to queue'
-                              : 'Suggest songs to the room host',
-                          style: TextStyle(
-                            color: isHost
-                                ? AppTheme.neon.withValues(alpha: 0.8)
-                                : AppTheme.cyan.withValues(alpha: 0.8),
-                            fontSize: 11.5,
+                        Tab(
+                          height: 40,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.favorite_rounded, size: 15),
+                              const SizedBox(width: 6),
+                              Text('Liked (${vault.favorites.length})'),
+                            ],
+                          ),
+                        ),
+                        Tab(
+                          height: 40,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.playlist_play_rounded, size: 17),
+                              const SizedBox(width: 6),
+                              Text('Playlists (${vault.playlists.length})'),
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ],
-              ),
-            ),
-
-            // Navigation Tabs: Search | Liked | Playlists
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-              child: Container(
-                height: 38,
-                decoration: BoxDecoration(
-                  color: AppTheme.bgElevated,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.borderHairline),
-                ),
-                child: TabBar(
-                  controller: _tabController,
-                  indicator: BoxDecoration(
-                    color: isHost
-                        ? AppTheme.neon.withValues(alpha: 0.2)
-                        : AppTheme.cyan.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isHost ? AppTheme.neon : AppTheme.cyan,
-                      width: 1,
-                    ),
-                  ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: isHost ? AppTheme.neon : AppTheme.cyan,
-                  unselectedLabelColor: AppTheme.textMuted,
-                  labelStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
-                  dividerColor: Colors.transparent,
-                  tabs: [
-                    const Tab(
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.search_rounded, size: 15),
-                          SizedBox(width: 6),
-                          Text('Search'),
-                        ],
-                      ),
-                    ),
-                    Tab(
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.favorite_rounded, size: 15),
-                          const SizedBox(width: 6),
-                          Text('Liked (${vault.favorites.length})'),
-                        ],
-                      ),
-                    ),
-                    Tab(
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.playlist_play_rounded, size: 17),
-                          const SizedBox(width: 6),
-                          Text('Playlists (${vault.playlists.length})'),
-                        ],
-                      ),
-                    ),
-                  ],
                 ),
               ),
-            ),
 
             const SizedBox(height: 8),
 
@@ -294,7 +344,8 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
           ],
         ),
       ),
-    );
+    ),
+  );
   }
 
   // =========================================================================
@@ -784,6 +835,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
           ),
           trailing: const Icon(Icons.chevron_right_rounded, color: Colors.white38),
           onTap: () {
+            _focusNode.unfocus();
             setState(() {
               _selectedPlaylist = pl;
             });
@@ -808,9 +860,13 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
         if (isHost) {
           _showHostSongActions(context, stem, vibe);
         } else {
-          vibe.suggestSong(stem);
-          Navigator.of(context).pop();
-          _showSuggestedToast(stem.title);
+          if (!_requestedStemIds.contains(stem.id)) {
+            setState(() {
+              _requestedStemIds.add(stem.id);
+            });
+            vibe.suggestSong(stem);
+            _showSuggestedToast(stem.title);
+          }
         }
       },
       leading: ClipRRect(
@@ -859,7 +915,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
           tooltip: 'Play Now',
           onPressed: () {
             vibe.hostPlayNow(stem);
-            Navigator.of(context).pop();
+            _showToast('Playing "${stem.title}"');
           },
         ),
         PopupMenuButton<String>(
@@ -908,11 +964,13 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
           onSelected: (action) {
             if (action == 'play_now') {
               vibe.hostPlayNow(stem);
-              Navigator.of(context).pop();
+              _showToast('Playing "${stem.title}"');
             } else if (action == 'play_next') {
               vibe.hostPlayNext(stem);
+              _showToast('Playing "${stem.title}" next');
             } else if (action == 'add_queue') {
               vibe.hostAddToQueue(stem);
+              _showToast('Added "${stem.title}" to queue');
             }
           },
         ),
@@ -924,6 +982,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
   void _showHostSongActions(BuildContext context, Stem stem, VibeProvider vibe) {
     showModalBottomSheet(
       context: context,
+      useRootNavigator: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -1007,7 +1066,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
                 onTap: () {
                   Navigator.of(ctx).pop();
                   vibe.hostPlayNow(stem);
-                  Navigator.of(context).pop();
+                  _showToast('Playing "${stem.title}"');
                 },
               ),
 
@@ -1033,6 +1092,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
                 onTap: () {
                   Navigator.of(ctx).pop();
                   vibe.hostPlayNext(stem);
+                  _showToast('Playing "${stem.title}" next');
                 },
               ),
 
@@ -1058,6 +1118,7 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
                 onTap: () {
                   Navigator.of(ctx).pop();
                   vibe.hostAddToQueue(stem);
+                  _showToast('Added "${stem.title}" to queue');
                 },
               ),
             ],
@@ -1067,31 +1128,49 @@ class _VibeRequestSheetState extends State<VibeRequestSheet>
     );
   }
 
-  /// Member Trailing: Suggest Button
+  /// Member Trailing: Suggest Button with persistent Sent state
   Widget _buildMemberActionButton(
     BuildContext context,
     Stem stem,
     VibeProvider vibe,
   ) {
+    final isRequested = _requestedStemIds.contains(stem.id);
     return ElevatedButton.icon(
       style: ElevatedButton.styleFrom(
-        backgroundColor: AppTheme.cyan.withValues(alpha: 0.15),
-        foregroundColor: AppTheme.cyan,
-        side: const BorderSide(color: AppTheme.cyan, width: 1),
+        backgroundColor: isRequested
+            ? AppTheme.cyan.withValues(alpha: 0.25)
+            : AppTheme.cyan.withValues(alpha: 0.15),
+        foregroundColor: isRequested ? Colors.white : AppTheme.cyan,
+        side: BorderSide(
+          color: isRequested ? AppTheme.cyan : AppTheme.cyan.withValues(alpha: 0.5),
+          width: 1,
+        ),
         elevation: 0,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
-      icon: const Icon(Icons.send_rounded, size: 14),
-      label: const Text(
-        'Request',
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+      icon: Icon(
+        isRequested ? Icons.check_circle_rounded : Icons.send_rounded,
+        size: 13,
+        color: isRequested ? AppTheme.neon : AppTheme.cyan,
       ),
-      onPressed: () {
-        vibe.suggestSong(stem);
-        Navigator.of(context).pop();
-        _showSuggestedToast(stem.title);
-      },
+      label: Text(
+        isRequested ? 'Sent' : 'Request',
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.bold,
+          color: isRequested ? AppTheme.neon : AppTheme.cyan,
+        ),
+      ),
+      onPressed: isRequested
+          ? null
+          : () {
+              setState(() {
+                _requestedStemIds.add(stem.id);
+              });
+              vibe.suggestSong(stem);
+              _showSuggestedToast(stem.title);
+            },
     );
   }
 

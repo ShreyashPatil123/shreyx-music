@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../providers/vibe_provider.dart';
 import '../../theme/app_theme.dart';
@@ -28,6 +29,8 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
   final TextEditingController _hostNameCtrl = TextEditingController();
 
   bool _isCreatingOrJoining = false;
+  String? _joinCodeError;
+  bool _hasNavigated = false;
 
   @override
   void initState() {
@@ -48,18 +51,31 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
     super.dispose();
   }
 
+  void _navigateToRoom(BuildContext context) {
+    if (_hasNavigated) return;
+    _hasNavigated = true;
+    if (mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      VibeRoomScreen.push(context);
+    }
+  }
+
   Future<void> _handleJoin(VibeProvider vibe) async {
     final code = _joinCodeCtrl.text.trim().toUpperCase();
     final name = _joinNameCtrl.text.trim();
 
-    if (code.length < 4) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid room code')),
-      );
+    if (code.length != 6) {
+      setState(() {
+        _joinCodeError = 'Room code must be exactly 6 characters';
+      });
       return;
     }
 
-    setState(() => _isCreatingOrJoining = true);
+    setState(() {
+      _joinCodeError = null;
+      _isCreatingOrJoining = true;
+    });
+
     try {
       await vibe.joinRoom(roomCode: code, userName: name.isNotEmpty ? name : 'Guest');
       if (mounted) {
@@ -67,14 +83,11 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isCreatingOrJoining = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            content: Text(e.toString().replaceAll("Exception: ", "")),
-          ),
-        );
+        final err = e.toString().replaceAll("Exception: ", "").replaceAll("TimeoutException after 0:00:15.000000: ", "");
+        setState(() {
+          _isCreatingOrJoining = false;
+          _joinCodeError = err;
+        });
       }
     }
   }
@@ -91,8 +104,7 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
       );
       if (mounted) {
         setState(() => _isCreatingOrJoining = false);
-        Navigator.of(context).pop();
-        VibeRoomScreen.push(context);
+        _navigateToRoom(context);
       }
     } catch (e) {
       if (mounted) {
@@ -110,13 +122,13 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
               ],
             ),
             content: Text(
-              e.toString().replaceAll('Exception: ', ''),
+              e.toString().replaceAll("Exception: ", ""),
               style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
             ),
             actions: [
               TextButton(
+                child: const Text('OK', style: TextStyle(color: AppTheme.neon)),
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Dismiss', style: TextStyle(color: AppTheme.neon)),
               ),
             ],
           ),
@@ -132,9 +144,8 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
     // Listen to status change: if room joined, navigate to room
     if (vibe.isInRoom && !_isCreatingOrJoining) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && Navigator.of(context).canPop()) {
-          Navigator.of(context).pop();
-          VibeRoomScreen.push(context);
+        if (mounted) {
+          _navigateToRoom(context);
         }
       });
     }
@@ -321,7 +332,7 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                   const SizedBox(height: 18),
 
                   SizedBox(
-                    height: 255,
+                    height: 275,
                     child: TabBarView(
                       controller: _tabCtrl,
                       children: [
@@ -332,6 +343,17 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                             TextField(
                               controller: _joinCodeCtrl,
                               textCapitalization: TextCapitalization.characters,
+                              maxLength: 6,
+                              buildCounter: (_, {required currentLength, maxLength, required isFocused}) => null,
+                              inputFormatters: [
+                                LengthLimitingTextInputFormatter(6),
+                                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9]')),
+                              ],
+                              onChanged: (val) {
+                                if (_joinCodeError != null) {
+                                  setState(() => _joinCodeError = null);
+                                }
+                              },
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,
@@ -344,6 +366,8 @@ class _VibeHomeSheetState extends State<VibeHomeSheet> with SingleTickerProvider
                                 hintText: 'e.g. VIBE88',
                                 hintStyle: const TextStyle(color: Colors.white24, letterSpacing: 3),
                                 prefixIcon: const Icon(Icons.pin_rounded, color: AppTheme.neon, size: 20),
+                                errorText: _joinCodeError,
+                                errorStyle: const TextStyle(color: AppTheme.danger, fontSize: 11),
                                 filled: true,
                                 fillColor: AppTheme.bgElevated,
                                 border: OutlineInputBorder(

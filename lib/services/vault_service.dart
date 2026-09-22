@@ -30,8 +30,14 @@ class VaultService {
       try {
         final list = jsonDecode(favRaw) as List<dynamic>;
         for (final item in list) {
-          final stem = Stem.fromJson(item as Map<String, dynamic>);
-          _favorites[stem.id] = stem;
+          if (item is Map<String, dynamic>) {
+            try {
+              final stem = Stem.fromJson(item);
+              if (stem.id.isNotEmpty) {
+                _favorites[stem.id] = stem;
+              }
+            } catch (_) {}
+          }
         }
       } catch (_) {}
     }
@@ -43,7 +49,11 @@ class VaultService {
         final list = jsonDecode(plRaw) as List<dynamic>;
         _playlists.clear();
         for (final item in list) {
-          _playlists.add(Playlist.fromJson(item as Map<String, dynamic>));
+          if (item is Map<String, dynamic>) {
+            try {
+              _playlists.add(Playlist.fromJson(item));
+            } catch (_) {}
+          }
         }
       } catch (_) {}
     }

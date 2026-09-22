@@ -38,6 +38,7 @@ class VibeService {
 
   // Track when disconnected for delayed reconnecting banner
   DateTime? _disconnectedAt;
+  Completer<void>? _activeConnectCompleter;
 
   // Stream Controllers
   final _statusCtrl = StreamController<VibeConnectionStatus>.broadcast();
@@ -86,13 +87,22 @@ class VibeService {
     }
   }
 
-  // Connect to public cloud WebSocket server with cold-start retry handling
+  // Connect to public cloud WebSocket server with mutex guard and fast timeout
   Future<void> connect() async {
     final targetUrl = Uri.parse(_config.activeWsUrl);
 
-    if (_status == VibeConnectionStatus.connected && _channel != null) {
+    // If already connected, do nothing
+    if ((_status == VibeConnectionStatus.connected || _status == VibeConnectionStatus.inRoom) && _channel != null) {
       return;
     }
+
+    // Mutex guard: if another connect() is in progress, await it instead of tearing sockets
+    if (_activeConnectCompleter != null && !_activeConnectCompleter!.isCompleted) {
+      return _activeConnectCompleter!.future;
+    }
+
+    _activeConnectCompleter = Completer<void>();
+    _reconnectTimer?.cancel();
 
     if (_channel != null) {
       try {
@@ -105,58 +115,82 @@ class VibeService {
     debugPrint('[ShreyXVibe] Connecting to cloud server: $targetUrl');
 
     int attempts = 0;
-    const maxAttempts = 5;
+    const maxAttempts = 3;
 
-    while (attempts < maxAttempts) {
-      attempts++;
-      try {
-        _channel = WebSocketChannel.connect(targetUrl);
-        await _channel!.ready.timeout(const Duration(seconds: 10));
+    try {
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          _channel = WebSocketChannel.connect(targetUrl);
+          await _channel!.ready.timeout(const Duration(seconds: 6));
 
-        _channelSub?.cancel();
-        _channelSub = _channel!.stream.listen(
-          _onMessageReceived,
-          onError: _onError,
-          onDone: _onDone,
-          cancelOnError: true,
-        );
-
-        _setStatus(VibeConnectionStatus.connected);
-        _reconnectAttempts = 0;
-        _startHeartbeat();
-
-        // If we had an active session, attempt seamless reconnection
-        if (_currentRoomCode != null && _sessionToken != null) {
-          debugPrint('[ShreyXVibe] Resuming session in room: $_currentRoomCode');
-          _send('join_room', {
-            'room_code': _currentRoomCode,
-            'user_name': _userName ?? 'Guest',
-            'session_token': _sessionToken,
-          });
-        }
-        return;
-      } catch (e) {
-        debugPrint('[ShreyXVibe] Connection attempt $attempts/$maxAttempts failed: $e');
-        if (_channel != null) {
-          try {
-            await _channel!.sink.close();
-          } catch (_) {}
-          _channel = null;
-        }
-
-        if (attempts >= maxAttempts) {
-          _setStatus(VibeConnectionStatus.error);
-          _onError(e);
-          throw TimeoutException(
-            'Could not reach ShreyX Vibe cloud server. Please verify your internet connection and try again.',
+          _channelSub?.cancel();
+          _channelSub = _channel!.stream.listen(
+            _onMessageReceived,
+            onError: _onError,
+            onDone: _onDone,
+            cancelOnError: true,
           );
-        }
 
-        // Exponential backoff with jitter for Render free cold start (takes ~30s)
-        final delaySec = 2 + (attempts * 2) + Random().nextInt(2);
-        debugPrint('[ShreyXVibe] Retrying connection in ${delaySec}s for server wake-up...');
-        await Future.delayed(Duration(seconds: delaySec));
+          _setStatus(VibeConnectionStatus.connected);
+          _reconnectAttempts = 0;
+          _startHeartbeat();
+
+          // If we had an active session, attempt seamless reconnection
+          if (_currentRoomCode != null && _sessionToken != null) {
+            debugPrint('[ShreyXVibe] Resuming session in room: $_currentRoomCode');
+            _send('join_room', {
+              'room_code': _currentRoomCode,
+              'user_name': _userName ?? 'Guest',
+              'session_token': _sessionToken,
+            });
+          }
+          if (_activeConnectCompleter != null && !_activeConnectCompleter!.isCompleted) {
+            _activeConnectCompleter!.complete();
+          }
+          return;
+        } catch (e) {
+          debugPrint('[ShreyXVibe] Connection attempt $attempts/$maxAttempts failed: $e');
+          if (_channel != null) {
+            try {
+              await _channel!.sink.close();
+            } catch (_) {}
+            _channel = null;
+          }
+
+          if (attempts >= maxAttempts) {
+            _setStatus(VibeConnectionStatus.error);
+            _onError(e);
+            if (_activeConnectCompleter != null && !_activeConnectCompleter!.isCompleted) {
+              _activeConnectCompleter!.completeError(e);
+            }
+            throw TimeoutException(
+              'Could not reach ShreyX Vibe cloud server. Please verify your internet connection and try again.',
+            );
+          }
+
+          // Backoff delay between retries
+          final delayMs = attempts == 1 ? 500 : (attempts == 2 ? 1500 : 3000);
+          debugPrint('[ShreyXVibe] Retrying connection in ${delayMs}ms...');
+          await Future.delayed(Duration(milliseconds: delayMs));
+        }
       }
+    } finally {
+      if (_activeConnectCompleter != null && !_activeConnectCompleter!.isCompleted) {
+        _activeConnectCompleter!.complete();
+      }
+      _activeConnectCompleter = null;
+    }
+  }
+
+  /// Cancels any waiting reconnect timer and immediately attempts to connect or sync
+  void reconnectNow() {
+    _reconnectTimer?.cancel();
+    _reconnectAttempts = 0;
+    if (_status != VibeConnectionStatus.connected && _status != VibeConnectionStatus.inRoom) {
+      connect();
+    } else {
+      requestSync();
     }
   }
 
@@ -171,6 +205,10 @@ class VibeService {
   void _onError(dynamic error) {
     debugPrint('[ShreyXVibe] WebSocket error: $error');
     _setStatus(VibeConnectionStatus.error);
+    _pingTimer?.cancel();
+    _channelSub?.cancel();
+    _channelSub = null;
+    _channel = null;
     if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
       _createRoomCompleter!.completeError(error);
     }
@@ -184,6 +222,9 @@ class VibeService {
     debugPrint('[ShreyXVibe] WebSocket connection closed');
     _setStatus(VibeConnectionStatus.disconnected);
     _pingTimer?.cancel();
+    _channelSub?.cancel();
+    _channelSub = null;
+    _channel = null;
     _scheduleReconnect();
   }
 
@@ -218,146 +259,165 @@ class VibeService {
   }
 
   void _onMessageReceived(dynamic raw) {
-    try {
-      final decoded = jsonDecode(raw.toString()) as Map<String, dynamic>;
-      final type = decoded['type'] as String?;
-      final payload = decoded['payload'] as Map<String, dynamic>? ?? {};
-
-      switch (type) {
-        case 'pong':
-          final clientTime = (payload['client_time'] as num?)?.toInt() ?? 0;
-          final serverTime = (payload['server_time'] as num?)?.toInt() ?? 0;
-          final now = DateTime.now().millisecondsSinceEpoch;
-          final rtt = now - clientTime;
-          _clockOffsetMs = serverTime - (clientTime + (rtt ~/ 2));
-          break;
-
-        case 'room_created':
-          _currentRoomCode = payload['room_code'] as String?;
-          _currentMemberId = payload['member_id'] as String?;
-          _sessionToken = payload['session_token'] as String?;
-          _isHost = true;
-          _reconnectAttempts = 0;
-          _saveSession();
-          _acquireWakeLock();
-          _setStatus(VibeConnectionStatus.inRoom);
-
-          if (payload['snapshot'] != null) {
-            final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
-            _roomSnapshotCtrl.add(snap);
-            if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
-              _createRoomCompleter!.complete(snap);
-            }
-          }
-          break;
-
-        case 'join_pending':
-          _setStatus(VibeConnectionStatus.waitingApproval);
-          final msg = payload['message'] as String? ?? 'Waiting for host approval...';
-          _messageCtrl.add(msg);
-          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
-            _joinRoomCompleter!.complete(true);
-          }
-          break;
-
-        case 'join_request':
-          _joinRequestCtrl.add(payload);
-          break;
-
-        case 'room_joined':
-          _currentRoomCode = payload['room_code'] as String?;
-          _currentMemberId = payload['member_id'] as String?;
-          _sessionToken = payload['session_token'] as String?;
-          _isHost = payload['is_host'] as bool? ?? false;
-          _reconnectAttempts = 0;
-          _saveSession();
-          _acquireWakeLock();
-          _setStatus(VibeConnectionStatus.inRoom);
-
-          if (payload['snapshot'] != null) {
-            final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
-            _roomSnapshotCtrl.add(snap);
-          }
-          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
-            _joinRoomCompleter!.complete(true);
-          }
-          break;
-
-        case 'join_rejected':
-          _setStatus(VibeConnectionStatus.connected);
-          _currentRoomCode = null;
-          final reason = payload['reason'] as String? ?? 'Host declined your request.';
-          _messageCtrl.add(reason);
-          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
-            _joinRoomCompleter!.completeError(Exception(reason));
-          }
-          break;
-
-        case 'sync_state':
-          _handleSyncState(payload);
-          break;
-
-        case 'new_suggestion':
-          final sugg = VibeSongSuggestion.fromJson(payload);
-          _suggestionCtrl.add(sugg);
-          break;
-
-        case 'suggestion_resolved':
-          final status = payload['status'] as String? ?? '';
-          final action = payload['action'] as String? ?? '';
-          if (status == 'approved') {
-            _messageCtrl.add(action == 'play_now' ? 'Song played now by host!' : 'Song added to queue!');
-          }
-          break;
-
-        case 'member_joined':
-          final member = VibeMember.fromJson(payload);
-          _messageCtrl.add('${member.name} joined the party!');
-          requestSync();
-          break;
-
-        case 'member_left':
-          final leftId = payload['member_id'] as String? ?? '';
-          debugPrint('[ShreyXVibe] Member left room: $leftId');
-          final newHostId = payload['new_host_id'] as String? ?? '';
-          if (newHostId == _currentMemberId) {
-            _isHost = true;
-            _messageCtrl.add('You are now the room host!');
-          }
-          requestSync();
-          break;
-
-        case 'kicked':
-          final reason = payload['reason'] as String? ?? 'Removed from room';
-          _currentRoomCode = null;
-          _releaseWakeLock();
-          _clearSavedRoomCode();
-          _setStatus(VibeConnectionStatus.connected);
-          _kickedCtrl.add(reason);
-          break;
-
-        case 'host_transferred':
-          final newHostId = payload['new_host_id'] as String? ?? '';
-          _isHost = (newHostId == _currentMemberId);
-          if (_isHost) {
-            _messageCtrl.add('Host controls transferred to you!');
-          }
-          requestSync();
-          break;
-
-        case 'error':
-          final msg = payload['message'] as String? ?? 'An error occurred';
-          _messageCtrl.add(msg);
-          if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
-            _createRoomCompleter!.completeError(Exception(msg));
-          }
-          if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
-            _joinRoomCompleter!.completeError(Exception(msg));
-          }
-          break;
+    final lines = raw.toString().split('\n');
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(trimmed) as Map<String, dynamic>;
+        final type = decoded['type'] as String?;
+        final payload = decoded['payload'] as Map<String, dynamic>? ?? {};
+        _handleSingleMessage(type, payload);
+      } catch (e) {
+        debugPrint('[ShreyXVibe] Message decode error: $e on raw: $trimmed');
       }
-    } catch (e) {
-      debugPrint('[ShreyXVibe] Message decode error: $e');
+    }
+  }
+
+  void _handleSingleMessage(String? type, Map<String, dynamic> payload) {
+    switch (type) {
+      case 'pong':
+        final clientTime = (payload['client_time'] as num?)?.toInt() ?? 0;
+        final serverTime = (payload['server_time'] as num?)?.toInt() ?? 0;
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final rtt = now - clientTime;
+        _clockOffsetMs = serverTime - (clientTime + (rtt ~/ 2));
+        break;
+
+      case 'room_created':
+        _currentRoomCode = payload['room_code'] as String?;
+        _currentMemberId = payload['member_id'] as String?;
+        _sessionToken = payload['session_token'] as String?;
+        _isHost = true;
+        _reconnectAttempts = 0;
+        _saveSession();
+        _acquireWakeLock();
+        _setStatus(VibeConnectionStatus.inRoom);
+
+        if (payload['snapshot'] != null) {
+          final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
+          _roomSnapshotCtrl.add(snap);
+          if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
+            _createRoomCompleter!.complete(snap);
+          }
+        }
+        break;
+
+      case 'join_pending':
+        _setStatus(VibeConnectionStatus.waitingApproval);
+        final msg = payload['message'] as String? ?? 'Waiting for host approval...';
+        _messageCtrl.add(msg);
+        if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+          _joinRoomCompleter!.complete(true);
+        }
+        break;
+
+      case 'join_request':
+        _joinRequestCtrl.add(payload);
+        break;
+
+      case 'room_joined':
+        _currentRoomCode = payload['room_code'] as String?;
+        _currentMemberId = payload['member_id'] as String?;
+        _sessionToken = payload['session_token'] as String?;
+        _isHost = payload['is_host'] as bool? ?? false;
+        _reconnectAttempts = 0;
+        _saveSession();
+        _acquireWakeLock();
+        _setStatus(VibeConnectionStatus.inRoom);
+
+        if (payload['snapshot'] != null) {
+          final snap = VibeRoom.fromSnapshot(payload['snapshot'] as Map<String, dynamic>);
+          _roomSnapshotCtrl.add(snap);
+        }
+        if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+          _joinRoomCompleter!.complete(true);
+        }
+        break;
+
+      case 'join_rejected':
+        _setStatus(VibeConnectionStatus.connected);
+        _currentRoomCode = null;
+        _clearSavedRoomCode();
+        _releaseWakeLock();
+        final reason = payload['reason'] as String? ?? 'Host declined your request.';
+        _messageCtrl.add(reason);
+        if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+          _joinRoomCompleter!.completeError(Exception(reason));
+        }
+        break;
+
+      case 'sync_state':
+        _handleSyncState(payload);
+        break;
+
+      case 'new_suggestion':
+        final sugg = VibeSongSuggestion.fromJson(payload);
+        _suggestionCtrl.add(sugg);
+        break;
+
+      case 'suggestion_resolved':
+        final status = payload['status'] as String? ?? '';
+        final action = payload['action'] as String? ?? '';
+        if (status == 'approved') {
+          _messageCtrl.add(action == 'play_now' ? 'Song played now by host!' : 'Song added to queue!');
+        }
+        break;
+
+      case 'member_joined':
+        final member = VibeMember.fromJson(payload);
+        _messageCtrl.add('${member.name} joined the party!');
+        requestSync();
+        break;
+
+      case 'member_left':
+        final leftId = payload['member_id'] as String? ?? '';
+        debugPrint('[ShreyXVibe] Member left room: $leftId');
+        final newHostId = payload['new_host_id'] as String? ?? '';
+        if (newHostId == _currentMemberId) {
+          _isHost = true;
+          _messageCtrl.add('You are now the room host!');
+        }
+        requestSync();
+        break;
+
+      case 'kicked':
+        final reason = payload['reason'] as String? ?? 'Removed from room';
+        _currentRoomCode = null;
+        _releaseWakeLock();
+        _clearSavedRoomCode();
+        _setStatus(VibeConnectionStatus.connected);
+        _kickedCtrl.add(reason);
+        break;
+
+      case 'host_transferred':
+        final newHostId = payload['new_host_id'] as String? ?? '';
+        _isHost = (newHostId == _currentMemberId);
+        if (_isHost) {
+          _messageCtrl.add('Host controls transferred to you!');
+        }
+        requestSync();
+        break;
+
+      case 'error':
+        final msg = payload['message'] as String? ?? payload['code'] as String? ?? 'An error occurred';
+        final errCode = (payload['code'] as String? ?? '').toLowerCase();
+        _messageCtrl.add(msg);
+        final lower = msg.toLowerCase();
+        if (lower.contains('not found') || lower.contains('closed') || lower.contains('ended') || lower.contains('does not exist') || errCode.contains('room_not_found')) {
+          _currentRoomCode = null;
+          _clearSavedRoomCode();
+          _releaseWakeLock();
+          _reconnectTimer?.cancel();
+          _setStatus(VibeConnectionStatus.connected);
+        }
+        if (_createRoomCompleter != null && !_createRoomCompleter!.isCompleted) {
+          _createRoomCompleter!.completeError(Exception(msg));
+        }
+        if (_joinRoomCompleter != null && !_joinRoomCompleter!.isCompleted) {
+          _joinRoomCompleter!.completeError(Exception(msg));
+        }
+        break;
     }
   }
 

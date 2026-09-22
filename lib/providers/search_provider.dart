@@ -50,40 +50,50 @@ class SearchProvider extends ChangeNotifier {
   }
 
   Future<void> executeSearch(String queryText) async {
-    if (queryText.trim().isEmpty) return;
+    final cleanQuery = queryText.trim();
+    if (cleanQuery.isEmpty) return;
 
     _isLoading = true;
     _error = null;
     _suggestions = [];
     notifyListeners();
 
-    try {
-      final searchList = await _yt.search.search(queryText);
-      final List<Stem> stems = [];
+    final List<Stem> stems = [];
+    int attempts = 0;
+    while (attempts < 2 && stems.isEmpty) {
+      attempts++;
+      try {
+        final searchList = await _yt.search.search(cleanQuery).timeout(const Duration(seconds: 10));
+        for (final video in searchList.take(25)) {
+          final durationSec = video.duration?.inSeconds ?? 0;
+          final artUrl = video.thumbnails.highResUrl.isNotEmpty
+              ? video.thumbnails.highResUrl
+              : video.thumbnails.standardResUrl;
 
-      for (final video in searchList.take(25)) {
-        final durationSec = video.duration?.inSeconds ?? 0;
-        final artUrl = video.thumbnails.highResUrl.isNotEmpty
-            ? video.thumbnails.highResUrl
-            : video.thumbnails.standardResUrl;
-
-        stems.add(Stem(
-          id: 'yt_${video.id.value}',
-          title: video.title,
-          artistName: video.author,
-          artworkUrl: artUrl,
-          durationSec: durationSec,
-          sourceId: video.id.value,
-        ));
+          stems.add(Stem(
+            id: 'yt_${video.id.value}',
+            title: video.title,
+            artistName: video.author,
+            artworkUrl: artUrl,
+            durationSec: durationSec,
+            sourceId: video.id.value,
+          ));
+        }
+      } catch (e) {
+        if (attempts >= 2) {
+          _error = 'Search failed. Please check internet connection.';
+        } else {
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
       }
-
-      _searchResults = stems;
-    } catch (e) {
-      _error = 'Search failed. Please check internet connection.';
-    } finally {
-      _isLoading = false;
-      notifyListeners();
     }
+
+    if (stems.isNotEmpty) {
+      _searchResults = stems;
+      _error = null;
+    }
+    _isLoading = false;
+    notifyListeners();
   }
 
   void clearSearch() {

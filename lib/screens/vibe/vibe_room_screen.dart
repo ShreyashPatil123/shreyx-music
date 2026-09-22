@@ -12,9 +12,14 @@ import 'vibe_request_sheet.dart';
 class VibeRoomScreen extends StatefulWidget {
   const VibeRoomScreen({super.key});
 
+  static const String routeName = '/vibe_room';
+
   static Future<void> push(BuildContext context) {
     return Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const VibeRoomScreen()),
+      MaterialPageRoute(
+        settings: const RouteSettings(name: routeName),
+        builder: (_) => const VibeRoomScreen(),
+      ),
     );
   }
 
@@ -24,6 +29,7 @@ class VibeRoomScreen extends StatefulWidget {
 
 class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
+  bool _hasPopped = false;
 
   @override
   void initState() {
@@ -63,13 +69,62 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
     final room = vibe.room;
 
     if (!vibe.isInRoom || room == null) {
-      // Room was left or closed
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) Navigator.of(context).pop();
-      });
-      return const Scaffold(
+      // Room was left or closed — pop any overlays and exit cleanly
+      if (!_hasPopped) {
+        _hasPopped = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            Navigator.of(context).popUntil((route) {
+              return route.settings.name != VibeRoomScreen.routeName && !route.isCurrent;
+            });
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            }
+          }
+        });
+      }
+      return Scaffold(
         backgroundColor: AppTheme.bg,
-        body: Center(child: CircularProgressIndicator(color: AppTheme.neon)),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+            onPressed: () {
+              if (Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
+            },
+          ),
+          title: const Text('Party Ended', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.sensors_off_rounded, size: 44, color: Colors.amberAccent),
+              const SizedBox(height: 12),
+              const Text(
+                'This party has ended or was closed.',
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.neon,
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () {
+                  if (Navigator.of(context).canPop()) {
+                    Navigator.of(context).pop();
+                  }
+                },
+                child: const Text('Return Home', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
@@ -640,8 +695,11 @@ class _VibeRoomScreenState extends State<VibeRoomScreen> with SingleTickerProvid
             child: const Text('Leave', style: TextStyle(color: Colors.white)),
             onPressed: () {
               Navigator.of(ctx).pop();
+              _hasPopped = true;
               vibe.leaveRoom();
-              Navigator.of(context).pop();
+              if (mounted && Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
             },
           ),
         ],

@@ -51,20 +51,20 @@ class Stem {
       };
 
   factory Stem.fromJson(Map<String, dynamic> json) => Stem(
-        id: json['id'] as String,
-        title: json['title'] as String,
-        artistName: json['artistName'] as String,
-        artworkUrl: json['artworkUrl'] as String? ?? '',
+        id: json['id']?.toString() ?? '',
+        title: json['title']?.toString() ?? 'Unknown Track',
+        artistName: json['artistName']?.toString() ?? 'Unknown Artist',
+        artworkUrl: json['artworkUrl']?.toString() ?? '',
         durationSec: (json['durationSec'] as num?)?.toInt() ?? 0,
-        sourceId: json['sourceId'] as String,
-        albumName: json['albumName'] as String?,
-        streamUri: json['streamUri'] as String?,
-        localFilePath: json['localFilePath'] as String?,
-        playlistId: json['playlistId'] as String?,
-        playlistTitle: json['playlistTitle'] as String?,
-        playlistArtwork: json['playlistArtwork'] as String?,
+        sourceId: json['sourceId']?.toString() ?? '',
+        albumName: json['albumName']?.toString(),
+        streamUri: json['streamUri']?.toString(),
+        localFilePath: json['localFilePath']?.toString(),
+        playlistId: json['playlistId']?.toString(),
+        playlistTitle: json['playlistTitle']?.toString(),
+        playlistArtwork: json['playlistArtwork']?.toString(),
         fileSizeBytes: (json['fileSizeBytes'] as num?)?.toInt(),
-        spotifyUri: json['spotifyUri'] as String?,
+        spotifyUri: json['spotifyUri']?.toString(),
       );
 
   Stem copyWith({
