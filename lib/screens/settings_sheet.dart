@@ -7,6 +7,7 @@ import '../services/crossfade_audio_engine.dart';
 import '../services/equalizer_service.dart';
 import '../services/stream_cache_service.dart';
 import '../providers/vibe_provider.dart';
+import 'diagnostics_sheet.dart';
 import 'vibe/vibe_home_sheet.dart';
 
 class SettingsSheet extends StatefulWidget {
@@ -296,6 +297,21 @@ class _SettingsSheetState extends State<SettingsSheet> {
                       ),
                     ],
                   ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.analytics_outlined, color: AppTheme.cyan),
+                  title: const Text(
+                    'Playback Diagnostics',
+                    style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: const Text(
+                    'Inspect local playback latencies, resolvers, and benchmarks',
+                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.textSecondary),
+                  onTap: () {
+                    DiagnosticsSheet.show(context);
+                  },
                 ),
               ],
             ),

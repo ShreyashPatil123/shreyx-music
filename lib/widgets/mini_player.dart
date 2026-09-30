@@ -175,7 +175,25 @@ class MiniPlayer extends StatelessWidget {
                                 onPressed: () => vault.toggleFavorite(stem),
                               ),
 
-                              const SizedBox(width: 6),
+                              // Previous Button
+                              IconButton(
+                                iconSize: 24,
+                                padding: const EdgeInsets.all(4),
+                                constraints: const BoxConstraints(),
+                                icon: Icon(
+                                  Icons.skip_previous_rounded,
+                                  color: canControl ? Colors.white70 : Colors.white24,
+                                ),
+                                onPressed: () {
+                                  if (!canControl) {
+                                    notifyHostOnly();
+                                  } else {
+                                    player.skipPrev();
+                                  }
+                                },
+                              ),
+
+                              const SizedBox(width: 4),
 
                               // Play / Pause Button with Glow
                               GestureDetector(

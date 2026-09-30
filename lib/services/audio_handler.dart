@@ -6,55 +6,55 @@ import 'package:audio_session/audio_session.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import '../models/stem.dart';
-import 'stream_cache_service.dart';
-import 'stream_resolver.dart';
-import 'vault_service.dart';
-
 import 'audio_normalization_service.dart';
 import 'crossfade_audio_engine.dart';
-import 'infinite_radio_service.dart';
 import 'equalizer_service.dart';
+import 'infinite_radio_service.dart';
+import 'playback_diagnostics_service.dart';
+import 'playback_event_pipeline.dart';
+import 'playback_queue_controller.dart';
+import 'stream_cache_service.dart';
+import 'track_preparation_service.dart';
+import 'vault_service.dart';
 
 class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   AndroidEqualizer _equalizer = AndroidEqualizer();
   late AudioPlayer _player;
-  
+
   AudioPlayer? _nextPlayer;
   AndroidEqualizer? _nextEqualizer;
   Stem? _preloadedStem;
   bool _isPreloading = false;
   bool _crossfadeInProgress = false;
 
-  final StreamResolver _resolver = StreamResolver();
+  final TrackPreparationService _preparation = TrackPreparationService();
   final StreamCacheService _streamCache = StreamCacheService();
-
   final AudioNormalizationService _normalization = AudioNormalizationService();
   final CrossfadeAudioEngine _crossfade = CrossfadeAudioEngine();
   final InfiniteRadioService _radio = InfiniteRadioService();
-  
+  final PlaybackDiagnosticsService _diagnostics = PlaybackDiagnosticsService();
+  final PlaybackQueueController _queueController = PlaybackQueueController();
+
   AudioNormalizationService get normalization => _normalization;
   CrossfadeAudioEngine get crossfade => _crossfade;
   EqualizerService get equalizer => EqualizerService();
+  PlaybackQueueController get queueController => _queueController;
 
-  List<Stem> _queue = [];
-  List<Stem> _originalQueue = [];
-  int _currentIndex = -1;
-  Stem? _activeStem;
-  bool _isShuffled = false;
-  
   final List<StreamSubscription> _playerSubscriptions = [];
 
+  Stem? _activeStem;
   Stem? get activeStem => _activeStem;
-  List<Stem> get currentQueue => List.unmodifiable(_queue);
-  int get currentIndex => _currentIndex;
-  bool get isShuffled => _isShuffled;
+  List<Stem> get currentQueue => _queueController.stems;
+  int get currentIndex => _queueController.currentIndex;
+  bool get isShuffled => _queueController.isShuffled;
   AudioPlayer get player => _player;
 
   final _activeStemController = BehaviorSubject<Stem?>();
   Stream<Stem?> get activeStemStream => _activeStemController.stream;
+  Stream<List<Stem>> get queueStream => _queueController.queueStream.map((items) => items.map((i) => i.stem).toList());
 
-  final _queueController = BehaviorSubject<List<Stem>>.seeded([]);
-  Stream<List<Stem>> get queueStream => _queueController.stream;
+  int _currentSessionId = 0;
+  Timer? _bgCacheTimer;
 
   ShrexAudioHandler() {
     _player = _createAudioPlayer(_equalizer);
@@ -67,9 +67,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
     if (!kIsWeb && Platform.isAndroid) {
       return AudioPlayer(
         audioPipeline: AudioPipeline(
-          androidAudioEffects: [
-            eq,
-          ],
+          androidAudioEffects: [eq],
         ),
       );
     }
@@ -80,9 +78,40 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
     try {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration.music());
+
+      // Audio interruption handling (e.g. phone calls, alarms)
+      session.interruptionEventStream.listen((event) {
+        if (event.begin) {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _player.setVolume(_player.volume * 0.5);
+              break;
+            case AudioInterruptionType.pause:
+            case AudioInterruptionType.unknown:
+              pause();
+              break;
+          }
+        } else {
+          switch (event.type) {
+            case AudioInterruptionType.duck:
+              _player.setVolume(1.0);
+              break;
+            case AudioInterruptionType.pause:
+              play();
+              break;
+            case AudioInterruptionType.unknown:
+              break;
+          }
+        }
+      });
+
+      // Headphone unplug handling
+      session.becomingNoisyEventStream.listen((_) {
+        pause();
+      });
     } catch (_) {}
   }
-  
+
   void _attachPlayerListeners(AudioPlayer p) {
     for (var sub in _playerSubscriptions) {
       sub.cancel();
@@ -117,38 +146,75 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
         updatePosition: p.position,
         bufferedPosition: p.bufferedPosition,
         speed: p.speed,
-        queueIndex: _currentIndex,
+        queueIndex: _queueController.currentIndex,
       ));
+
+      if (processingState == ProcessingState.ready) {
+        final currentDiag = _diagnostics.currentSession;
+        if (currentDiag != null) {
+          _diagnostics.markPlayerReady(currentDiag.sessionId);
+        }
+      }
     }));
 
     _playerSubscriptions.add(p.playerStateStream.listen((state) {
+      if (state.playing && state.processingState == ProcessingState.ready) {
+        final currentDiag = _diagnostics.currentSession;
+        if (currentDiag != null) {
+          _diagnostics.markFirstAudioPlayed(currentDiag.sessionId);
+        }
+      }
+
       if (state.processingState == ProcessingState.completed) {
         if (!_crossfadeInProgress) {
           skipToNext();
         }
       }
     }));
-    
+
     _playerSubscriptions.add(p.positionStream.listen((position) {
       final dur = p.duration;
-      if (dur == null || !_crossfade.isEnabled) return;
+      if (dur == null) return;
 
-      // 1. Preload next track early (12s before end)
+      // Stable playback reached: schedule background cache with priority (Point 9)
+      if (position.inSeconds >= 5 && _bgCacheTimer == null && _activeStem != null) {
+        _scheduleBackgroundCache(_activeStem!);
+      }
+
+      if (!_crossfade.isEnabled) return;
+
+      // Preload next track early (12s before end)
       final remaining = dur - position;
       final preloadThreshold = Duration(seconds: _crossfade.crossfadeSeconds + 8);
       if (remaining <= preloadThreshold && !_isPreloading && _preloadedStem == null && !_crossfadeInProgress) {
         _preloadNextTrack();
       }
 
-      // 2. Trigger crossfade transition when entering crossfade window
+      // Trigger crossfade transition when entering crossfade window
       if (_crossfade.shouldStartCrossfade(position, dur) && !_crossfadeInProgress) {
         _startCrossfadeToNext();
       }
     }));
   }
 
-  int _currentSessionId = 0;
-  
+  void _scheduleBackgroundCache(Stem stem) {
+    _bgCacheTimer?.cancel();
+    _bgCacheTimer = Timer(const Duration(seconds: 2), () async {
+      // Only cache if player is currently playing smoothly and not buffering
+      if (_player.playing && _player.processingState == ProcessingState.ready) {
+        final cached = _preparation.cache.get(stem.sourceId);
+        if (cached != null) {
+          await _streamCache.backgroundCacheStream(
+            stemId: stem.id,
+            url: cached.uri,
+            userAgent: cached.userAgent,
+            container: cached.container,
+          );
+        }
+      }
+    });
+  }
+
   void _pushMediaItem(Stem targetStem) {
     final mi = MediaItem(
       id: targetStem.id,
@@ -166,51 +232,33 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
         'localFilePath': targetStem.localFilePath ?? '',
       },
     );
-    this.mediaItem.add(mi);
+    mediaItem.add(mi);
   }
 
+  /// Initiates playback for [stem] with optional [queue].
+  ///
+  /// Updates player state immediately to prevent frozen UI, enforces controlled
+  /// fallback resolution, and implements non-blocking failure recovery.
   Future<void> playStem(Stem stem, {List<Stem>? queue, bool preserveQueue = false}) async {
     final int sessionId = ++_currentSessionId;
+    _bgCacheTimer?.cancel();
+    _bgCacheTimer = null;
 
-    // Invalidate any preloaded next track since user explicitly chose a new track
+    // Start diagnostics session
+    final diag = _diagnostics.startSession(
+      stemId: stem.id,
+      title: stem.title,
+      artist: stem.artistName,
+      sourceId: stem.sourceId,
+    );
+
     _cleanupNextPlayer();
 
-    // 1. Cut off previous audio
-    try {
-      await _player.stop();
-    } catch (_) {}
-
-    // 2. Set queue
-    if (queue != null && queue.isNotEmpty) {
-      _originalQueue = List.from(queue);
-      if (_isShuffled) {
-        final rest = queue.where((s) => s.id != stem.id).toList()..shuffle();
-        _queue = [stem, ...rest];
-        _currentIndex = 0;
-      } else {
-        _queue = List.from(queue);
-        _currentIndex = _queue.indexWhere((s) => s.id == stem.id);
-        if (_currentIndex == -1) {
-          _queue.insert(0, stem);
-          _currentIndex = 0;
-        }
-      }
-      _queueController.add(_queue);
-    } else if (!preserveQueue) {
-      if (_queue.isEmpty || !_queue.any((s) => s.id == stem.id)) {
-        _queue = [stem];
-        _originalQueue = [stem];
-        _currentIndex = 0;
-      } else {
-        _currentIndex = _queue.indexWhere((s) => s.id == stem.id);
-      }
-      _queueController.add(_queue);
-    }
-
+    // 1. Immediately update global player UI to show song metadata and buffering
     _activeStem = stem;
     _activeStemController.add(stem);
+    _pushMediaItem(stem);
 
-    // 3. Broadcast buffering state
     playbackState.add(playbackState.value.copyWith(
       processingState: AudioProcessingState.buffering,
       playing: true,
@@ -224,27 +272,45 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
         MediaAction.seekForward,
         MediaAction.seekBackward,
       },
+      queueIndex: _queueController.currentIndex,
     ));
 
-    _pushMediaItem(stem);
+    // 2. Queue management via PlaybackQueueController
+    if (queue != null && queue.isNotEmpty) {
+      _queueController.setQueue(queue, initialStem: stem);
+    } else if (!preserveQueue) {
+      if (_queueController.stems.isEmpty || !_queueController.stems.any((s) => s.id == stem.id)) {
+        _queueController.setQueue([stem], initialStem: stem);
+      }
+    }
 
+    _queueController.updateActiveTrackState(TrackPlaybackState.preparing);
+
+    // 3. Resolve and prepare stream
     try {
       if (stem.isLocal && stem.localFilePath != null) {
         if (sessionId != _currentSessionId) return;
+        await _player.stop();
         await _player.setFilePath(stem.localFilePath!);
       } else {
-        // Check LRU disk cache
+        // Check disk LRU cache first
         final cachedPath = _streamCache.getCachedPath(stem.id);
         if (cachedPath != null) {
-          debugPrint('[AudioHandler] ⚡ Cache hit for "${stem.title}"');
+          debugPrint('[AudioHandler] ⚡ Disk cache hit for "${stem.title}"');
           if (sessionId != _currentSessionId) return;
+          _diagnostics.markStreamSelected(diag.sessionId, resolver: 'disk_cache', wasCached: true);
+          await _player.stop();
           await _player.setFilePath(cachedPath);
         } else {
-          // Resolve stream URL from network
-          final resolved = await _resolver.resolveStream(stem);
+          // Resolve stream URL using TrackPreparationService with controlled fallback
+          final prepared = await _preparation.prepareTrack(
+            stem,
+            diagnosticsSessionId: diag.sessionId,
+          );
+
           if (sessionId != _currentSessionId) return;
 
-          Stem? effectiveStem = resolved.effectiveStem;
+          Stem? effectiveStem = prepared.effectiveStem;
           if (effectiveStem != null) {
             _activeStem = effectiveStem;
             _activeStemController.add(_activeStem);
@@ -252,64 +318,63 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
             VaultService().updateStem(effectiveStem);
           }
 
-          final Map<String, String>? headers = resolved.userAgent != null
-              ? {'User-Agent': resolved.userAgent!}
-              : null;
-          await _player.setUrl(resolved.uri, headers: headers);
+          final headers = prepared.userAgent != null ? {'User-Agent': prepared.userAgent!} : null;
 
-          // Silently cache in background
-          final cacheId = effectiveStem?.sourceId ?? stem.sourceId;
-          if (cacheId.length == 11 && !cacheId.contains(' ')) {
-            _streamCache.backgroundCacheStream(
-              stemId: stem.id,
-              url: resolved.uri,
-              userAgent: resolved.userAgent,
-            );
-          }
+          _diagnostics.markPlayerSetUrlStart(diag.sessionId);
+          await _player.stop();
+          await _player.setUrl(prepared.uri, headers: headers);
         }
       }
 
       if (sessionId != _currentSessionId) return;
+
+      _queueController.updateActiveTrackState(TrackPlaybackState.playing);
       await _player.setVolume(1.0);
       await _player.play();
       _normalization.applyToPlayer(_player, null);
       VaultService().recordPlay(_activeStem ?? stem);
+      PlaybackEventPipeline().onPlayStarted(_activeStem ?? stem, sessionId: diag.sessionId);
     } catch (e) {
-      debugPrint('[AudioHandler] playStem error: $e');
-      if (sessionId == _currentSessionId) {
+      debugPrint('[AudioHandler] Playback error on "${stem.title}": $e');
+
+      // Purge invalid/403 stream from cache immediately (Safeguard 2)
+      _preparation.invalidateStream(stem.sourceId);
+      _diagnostics.markError(diag.sessionId, reason: e.toString());
+
+      if (sessionId != _currentSessionId) return;
+
+      // Non-blocking failure recovery (Point 13 & Safeguard 3):
+      // Mark current track failed, keep queue intact, and advance to next track
+      final nextItem = _queueController.handleCurrentTrackFailure(e.toString());
+      if (nextItem != null) {
+        debugPrint('[AudioHandler] ⏭️ Auto-recovering: Advancing to "${nextItem.stem.title}"');
+        await playStem(nextItem.stem, preserveQueue: true);
+      } else {
         playbackState.add(playbackState.value.copyWith(
           processingState: AudioProcessingState.idle,
           playing: false,
         ));
       }
-      rethrow;
     }
   }
 
-  int _getNextTrackIndex() {
-    if (_currentIndex + 1 < _queue.length) {
-      return _currentIndex + 1;
-    } else if (_player.loopMode == LoopMode.all && _queue.isNotEmpty) {
-      return 0;
-    }
-    return -1;
-  }
+  int _getNextTrackIndex() => _queueController.getNextIndex();
 
   Future<void> _preloadNextTrack() async {
-    final nextIndex = _getNextTrackIndex();
-    if (nextIndex == -1 || nextIndex >= _queue.length) return;
+    final nextIdx = _getNextTrackIndex();
+    if (nextIdx == -1 || nextIdx >= _queueController.stems.length) return;
 
-    final stem = _queue[nextIndex];
+    final stem = _queueController.stems[nextIdx];
     _isPreloading = true;
     try {
       debugPrint('[AudioHandler] ⏳ Pre-buffering next track for crossfade: "${stem.title}"');
-      final resolved = await _resolver.resolveStream(stem);
-      final headers = resolved.userAgent != null ? {'User-Agent': resolved.userAgent!} : null;
+      final prepared = await _preparation.prepareTrack(stem);
+      final headers = prepared.userAgent != null ? {'User-Agent': prepared.userAgent!} : null;
 
       _cleanupNextPlayer();
       _nextEqualizer = AndroidEqualizer();
       _nextPlayer = _createAudioPlayer(_nextEqualizer!);
-      await _nextPlayer!.setUrl(resolved.uri, headers: headers);
+      await _nextPlayer!.setUrl(prepared.uri, headers: headers);
       await _nextPlayer!.setVolume(0.0);
       _preloadedStem = stem;
       debugPrint('[AudioHandler] ⚡ Pre-buffer ready for crossfade: "${stem.title}"');
@@ -322,8 +387,10 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _cleanupNextPlayer() {
-    _nextPlayer?.stop();
-    _nextPlayer?.dispose();
+    try {
+      _nextPlayer?.stop();
+      _nextPlayer?.dispose();
+    } catch (_) {}
     _nextPlayer = null;
     _nextEqualizer = null;
     _preloadedStem = null;
@@ -331,22 +398,19 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> _startCrossfadeToNext() async {
     if (_crossfadeInProgress) return;
-    final nextIndex = _getNextTrackIndex();
-    if (nextIndex == -1) return;
-    final nextStem = _queue[nextIndex];
+    final nextIdx = _getNextTrackIndex();
+    if (nextIdx == -1 || nextIdx >= _queueController.stems.length) return;
+    final nextStem = _queueController.stems[nextIdx];
 
     _crossfadeInProgress = true;
     try {
-      debugPrint('[AudioHandler] 🔀 Starting seamless crossfade into "${nextStem.title}" (${_crossfade.crossfadeSeconds}s)');
-      
-      // If next player is not preloaded yet, prepare it now
       if (_nextPlayer == null || _preloadedStem?.id != nextStem.id) {
         _cleanupNextPlayer();
         _nextEqualizer = AndroidEqualizer();
         _nextPlayer = _createAudioPlayer(_nextEqualizer!);
-        final resolved = await _resolver.resolveStream(nextStem);
-        final headers = resolved.userAgent != null ? {'User-Agent': resolved.userAgent!} : null;
-        await _nextPlayer!.setUrl(resolved.uri, headers: headers);
+        final prepared = await _preparation.prepareTrack(nextStem);
+        final headers = prepared.userAgent != null ? {'User-Agent': prepared.userAgent!} : null;
+        await _nextPlayer!.setUrl(prepared.uri, headers: headers);
         await _nextPlayer!.setVolume(0.0);
       }
 
@@ -354,7 +418,6 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       final targetEqualizer = _nextEqualizer!;
       final oldPlayer = _player;
 
-      // Start playing the incoming track at 0 volume
       await targetPlayer.play();
 
       final int totalMs = _crossfade.crossfadeDuration.inMilliseconds;
@@ -366,7 +429,6 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
         if (elapsedMs >= totalMs) {
           timer.cancel();
 
-          // Swap active player reference
           _player = targetPlayer;
           _equalizer = targetEqualizer;
           EqualizerService().attachEqualizer(_equalizer);
@@ -375,7 +437,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
           _nextEqualizer = null;
           _preloadedStem = null;
 
-          _currentIndex = nextIndex;
+          _queueController.advanceToNext();
           _activeStem = nextStem;
           _activeStemController.add(_activeStem);
           _pushMediaItem(nextStem);
@@ -384,12 +446,12 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
           _normalization.applyToPlayer(_player, null);
           VaultService().recordPlay(nextStem);
 
-          await oldPlayer.stop();
-          oldPlayer.dispose();
+          try {
+            await oldPlayer.stop();
+            oldPlayer.dispose();
+          } catch (_) {}
 
           _crossfadeInProgress = false;
-          debugPrint('[AudioHandler] 🔀 Crossfade complete. Now playing "${nextStem.title}"');
-
           _maybeReplenishQueue();
         } else {
           final double progress = elapsedMs / totalMs;
@@ -402,11 +464,8 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       debugPrint('[AudioHandler] Crossfade execution error: $e');
       _crossfadeInProgress = false;
       _cleanupNextPlayer();
-      // Fallback: normal skip
-      if (_currentIndex + 1 < _queue.length) {
-        _currentIndex++;
-        await playStem(_queue[_currentIndex], preserveQueue: true);
-      }
+      // Clean fallback: standard skip
+      skipToNext();
     }
   }
 
@@ -435,6 +494,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> stop() async {
     _cleanupNextPlayer();
+    _bgCacheTimer?.cancel();
     try {
       await _player.stop();
     } catch (_) {}
@@ -457,9 +517,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> seekBy(Duration offset) async {
     final newPos = _player.position + offset;
     final duration = _player.duration ?? Duration(seconds: _activeStem?.durationSec ?? 0);
-    final clamped = newPos < Duration.zero
-        ? Duration.zero
-        : (newPos > duration ? duration : newPos);
+    final clamped = newPos < Duration.zero ? Duration.zero : (newPos > duration ? duration : newPos);
     await seek(clamped);
   }
 
@@ -471,50 +529,26 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> seekForward(bool begin) async {
-    if (begin) {
-      await seekBy(const Duration(seconds: 10));
-    }
+    if (begin) await seekBy(const Duration(seconds: 10));
   }
 
   @override
   Future<void> seekBackward(bool begin) async {
-    if (begin) {
-      await seekBy(const Duration(seconds: -10));
-    }
+    if (begin) await seekBy(const Duration(seconds: -10));
   }
 
   bool _isFetchingAutoplay = false;
 
   @override
   Future<void> skipToNext() async {
-    if (_queue.isEmpty && _activeStem == null) return;
+    if (_queueController.stems.isEmpty && _activeStem == null) return;
 
-    // Smooth 150ms fade-out on manual skip if playing
-    if (_crossfade.isEnabled && _player.playing) {
-      try {
-        final double curVol = _player.volume;
-        for (int i = 3; i >= 0; i--) {
-          await _player.setVolume(curVol * (i / 3.0));
-          await Future.delayed(const Duration(milliseconds: 25));
-        }
-      } catch (_) {}
-    }
-
-    if (_currentIndex + 1 < _queue.length) {
-      _currentIndex++;
-      await playStem(_queue[_currentIndex], preserveQueue: true);
+    final nextItem = _queueController.advanceToNext();
+    if (nextItem != null) {
+      await playStem(nextItem.stem, preserveQueue: true);
       _maybeReplenishQueue();
-    } else if (_player.loopMode == LoopMode.all && _queue.isNotEmpty) {
-      if (_isShuffled && _queue.length > 1) {
-        final current = _queue[_currentIndex];
-        final rest = _queue.where((s) => s.id != current.id).toList()..shuffle();
-        _queue = [current, ...rest];
-        _queueController.add(_queue);
-      }
-      _currentIndex = 0;
-      await playStem(_queue[0], preserveQueue: true);
     } else {
-      // Autonomous infinite radio when queue ends
+      // Queue exhausted: Fetch infinite radio recommendations (Point 16)
       await _fetchAndPlayAutoplay();
     }
   }
@@ -525,37 +559,26 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       await seek(Duration.zero);
       return;
     }
-    if (_queue.isEmpty) return;
-    if (_currentIndex - 1 >= 0) {
-      _currentIndex--;
-      await playStem(_queue[_currentIndex], preserveQueue: true);
+    final prevItem = _queueController.retreatToPrevious();
+    if (prevItem != null) {
+      await playStem(prevItem.stem, preserveQueue: true);
     } else {
       await seek(Duration.zero);
     }
   }
 
   void setQueue(List<Stem> newQueue) {
-    if (newQueue.isEmpty) return;
-    _queue = List.from(newQueue);
-    _originalQueue = List.from(newQueue);
-    if (_activeStem != null) {
-      final idx = _queue.indexWhere((s) => s.id == _activeStem!.id);
-      _currentIndex = idx != -1 ? idx : 0;
-    } else {
-      _currentIndex = 0;
-    }
-    _queueController.add(_queue);
+    _queueController.setQueue(newQueue, initialStem: _activeStem);
   }
 
   Future<void> _maybeReplenishQueue() async {
-    if (_queue.isNotEmpty && _currentIndex >= _queue.length - 3) {
-      final currentStem = _activeStem ?? _queue.last;
+    if (_queueController.stems.isNotEmpty && _queueController.currentIndex >= _queueController.stems.length - 3) {
+      final currentStem = _activeStem ?? _queueController.stems.last;
       try {
         final tracks = await _radio.fetchRadioTracks(currentStem.sourceId);
-        final uniqueTracks = _radio.filterDuplicates(tracks, _queue);
+        final uniqueTracks = _radio.filterDuplicates(tracks, _queueController.stems);
         if (uniqueTracks.isNotEmpty) {
-          _queue.addAll(uniqueTracks);
-          _queueController.add(_queue);
+          _queueController.appendUniqueTracks(uniqueTracks);
         }
       } catch (e) {
         debugPrint('[AudioHandler] Background queue replenish error: $e');
@@ -563,76 +586,50 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  /// Autoplay / Infinite Radio at queue end (Point 16):
+  /// Fetches new candidates. If empty/unavailable, cleanly stops without restarting at index 0.
   Future<void> _fetchAndPlayAutoplay() async {
     if (_isFetchingAutoplay) return;
     _isFetchingAutoplay = true;
 
     try {
-      final currentStem = _activeStem ?? (_queue.isNotEmpty ? _queue.last : null);
+      final currentStem = _activeStem ?? (_queueController.stems.isNotEmpty ? _queueController.stems.last : null);
       if (currentStem == null) return;
 
       debugPrint('[AudioHandler] ⚡ Queue ended. Auto-fetching radio tracks for "${currentStem.title}"...');
-      
       final tracks = await _radio.fetchRadioTracks(currentStem.sourceId);
-      final uniqueTracks = _radio.filterDuplicates(tracks, _queue);
-      
-      if (uniqueTracks.isNotEmpty) {
-        _queue.addAll(uniqueTracks);
-        _queueController.add(_queue);
+      final uniqueTracks = _radio.filterDuplicates(tracks, _queueController.stems);
 
-        if (_currentIndex + 1 < _queue.length) {
-          _currentIndex++;
-          await playStem(_queue[_currentIndex], preserveQueue: true);
+      if (uniqueTracks.isNotEmpty) {
+        _queueController.appendUniqueTracks(uniqueTracks);
+        final nextItem = _queueController.advanceToNext();
+        if (nextItem != null) {
+          await playStem(nextItem.stem, preserveQueue: true);
           return;
         }
       }
 
-      // If radio fetch fails/empty, wrap around queue
-      if (_queue.isNotEmpty) {
-        _currentIndex = 0;
-        await playStem(_queue[0], preserveQueue: true);
+      // If loopMode is ALL, explicit user request to repeat playlist
+      if (_player.loopMode == LoopMode.all && _queueController.stems.isNotEmpty) {
+        _queueController.setQueue(_queueController.stems, initialIndex: 0);
+        await playStem(_queueController.stems[0], preserveQueue: true);
+      } else {
+        // Stop cleanly - do NOT loop to 0 (Point 16)
+        debugPrint('[AudioHandler] 🏁 End of queue reached. No more playable radio tracks.');
+        playbackState.add(playbackState.value.copyWith(
+          processingState: AudioProcessingState.completed,
+          playing: false,
+        ));
       }
     } catch (e) {
       debugPrint('[AudioHandler] Autoplay error: $e');
-      if (_queue.isNotEmpty) {
-        _currentIndex = 0;
-        await playStem(_queue[0], preserveQueue: true);
-      }
     } finally {
       _isFetchingAutoplay = false;
     }
   }
 
   void setShuffled(bool enabled, {List<Stem>? originalQueue}) {
-    if (originalQueue != null && originalQueue.isNotEmpty) {
-      _originalQueue = List.from(originalQueue);
-    } else if (_originalQueue.isEmpty && _queue.isNotEmpty) {
-      _originalQueue = List.from(_queue);
-    }
-
-    _isShuffled = enabled;
-    if (enabled) {
-      if (_queue.length <= 1) return;
-      final current = _activeStem;
-      final rest = _queue.where((s) => s.id != current?.id).toList()..shuffle();
-      if (current != null) {
-        _queue = [current, ...rest];
-        _currentIndex = 0;
-      } else {
-        _queue = rest;
-        _currentIndex = 0;
-      }
-    } else {
-      if (_originalQueue.isNotEmpty) {
-        _queue = List.from(_originalQueue);
-        if (_activeStem != null) {
-          final idx = _queue.indexWhere((s) => s.id == _activeStem!.id);
-          _currentIndex = idx != -1 ? idx : 0;
-        } else {
-          _currentIndex = 0;
-        }
-      }
-    }
+    _queueController.setShuffled(enabled);
   }
 
   void shuffleQueue() {
@@ -640,21 +637,16 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void addToQueue(Stem stem) {
-    _queue.add(stem);
-    _queueController.add(_queue);
+    _queueController.addToQueue(stem);
   }
 
   void playNext(Stem stem) {
-    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
-      _queue.insert(_currentIndex + 1, stem);
-    } else {
-      _queue.add(stem);
-    }
-    _queueController.add(_queue);
+    _queueController.playNext(stem);
   }
 
   void setLoopMode(LoopMode mode) {
     _player.setLoopMode(mode);
+    _queueController.setLoopMode(mode);
   }
 
   // ── Android Auto MediaBrowser Support ──
@@ -663,24 +655,12 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<List<MediaItem>> getChildren(String parentMediaId, [Map<String, dynamic>? options]) async {
     if (parentMediaId == AudioService.browsableRootId || parentMediaId == 'root') {
       return [
-        const MediaItem(
-          id: 'favorites',
-          title: 'Favorites',
-          playable: false,
-        ),
-        const MediaItem(
-          id: 'recent',
-          title: 'Recently Played',
-          playable: false,
-        ),
-        const MediaItem(
-          id: 'playlists',
-          title: 'Playlists',
-          playable: false,
-        ),
+        const MediaItem(id: 'favorites', title: 'Favorites', playable: false),
+        const MediaItem(id: 'recent', title: 'Recently Played', playable: false),
+        const MediaItem(id: 'playlists', title: 'Playlists', playable: false),
       ];
     }
-    
+
     if (parentMediaId == 'favorites') {
       return VaultService().favorites.map(_stemToMediaItem).toList();
     }
@@ -689,12 +669,12 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
     }
     if (parentMediaId == 'playlists') {
       return VaultService().playlists.map((pl) => MediaItem(
-        id: 'pl_${pl.id}',
-        title: pl.name,
-        artist: '${pl.stems.length} tracks',
-        artUri: pl.artworkUrl.isNotEmpty ? Uri.tryParse(pl.artworkUrl) : null,
-        playable: false,
-      )).toList();
+            id: 'pl_${pl.id}',
+            title: pl.name,
+            artist: '${pl.stems.length} tracks',
+            artUri: pl.artworkUrl.isNotEmpty ? Uri.tryParse(pl.artworkUrl) : null,
+            playable: false,
+          )).toList();
     }
     if (parentMediaId.startsWith('pl_')) {
       final realId = parentMediaId.substring(3);
@@ -756,9 +736,11 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       sub.cancel();
     }
     _cleanupNextPlayer();
+    _bgCacheTimer?.cancel();
     _player.dispose();
-    _resolver.dispose();
+    _preparation.dispose();
     _normalization.dispose();
     _activeStemController.close();
+    _queueController.dispose();
   }
 }

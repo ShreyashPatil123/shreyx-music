@@ -12,6 +12,7 @@ import 'services/audio_normalization_service.dart';
 import 'services/crossfade_audio_engine.dart';
 import 'services/equalizer_service.dart';
 import 'services/stream_cache_service.dart';
+import 'services/playback_event_pipeline.dart';
 import 'services/vibe_service.dart';
 import 'theme/app_theme.dart';
 
@@ -36,6 +37,7 @@ Future<void> main() async {
   await CrossfadeAudioEngine().init();
   await EqualizerService().init();
   await VibeService().init();
+  await PlaybackEventPipeline().init();
 
   // Initialize Native Audio Service for Background & Lock Screen Playback
   _audioHandler = await AudioService.init(

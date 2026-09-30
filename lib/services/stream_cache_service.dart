@@ -5,12 +5,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'fast_downloader.dart';
 
-/// Zero-touch LRU audio cache.
+/// Zero-touch LRU audio cache with exact container/codec format integrity.
 ///
-/// Every song that streams from the network is silently saved to disk.
-/// On repeat play the cached file is used directly — 0ms latency, zero
-/// internet usage. Least-recently-played tracks are evicted when the
-/// cache exceeds [maxCacheBytes] (~512 MB ≈ 125 tracks at 4 MB each).
+/// Ensures tracks are saved with extensions matching their actual media
+/// representation (.webm for WebM/Opus, .m4a for AAC/MP4).
 class StreamCacheService {
   static final StreamCacheService _instance = StreamCacheService._internal();
   factory StreamCacheService() => _instance;
@@ -27,8 +25,6 @@ class StreamCacheService {
   /// { stemId → CacheEntry }
   final Map<String, CacheEntry> _entries = {};
 
-  // ───────────────────── init ─────────────────────
-
   Future<void> init() async {
     if (_ready) return;
     final appCache = await getApplicationCacheDirectory();
@@ -41,28 +37,40 @@ class StreamCacheService {
     _entries.removeWhere((_, e) => !File(e.filePath).existsSync());
     await _saveMeta();
     _ready = true;
-    debugPrint('[StreamCache] init  dir=${_cacheDir.path}  '
-        'entries=${_entries.length}  size=${_totalBytes()}');
+    debugPrint('[StreamCache] init dir=${_cacheDir.path} entries=${_entries.length} size=${_totalBytes()}');
   }
-
-  // ───────────────── public API ──────────────────
 
   /// Returns the cached file path for [stemId], or null.
   /// Also bumps its `lastPlayedAt` so the LRU knows it's fresh.
   String? getCachedPath(String stemId) {
-    final entry = _entries[stemId];
+    var entry = _entries[stemId];
+
+    // Fallback: check disk for webm or m4a if not in memory index
+    if (entry == null) {
+      final webm = File('${_cacheDir.path}/$stemId.webm');
+      final m4a = File('${_cacheDir.path}/$stemId.m4a');
+      if (webm.existsSync() && webm.lengthSync() > 0) {
+        registerCachedFile(stemId: stemId, filePath: webm.path);
+        entry = _entries[stemId];
+      } else if (m4a.existsSync() && m4a.lengthSync() > 0) {
+        registerCachedFile(stemId: stemId, filePath: m4a.path);
+        entry = _entries[stemId];
+      }
+    }
+
     if (entry == null) return null;
     final file = File(entry.filePath);
-    if (!file.existsSync()) {
+    if (!file.existsSync() || file.lengthSync() == 0) {
       _entries.remove(stemId);
-      _saveMeta(); // fire-and-forget
+      _saveMeta();
       return null;
     }
+
     // Touch LRU timestamp
     _entries[stemId] = entry.copyWith(
       lastPlayedAt: DateTime.now(),
     );
-    _saveMeta(); // fire-and-forget
+    _saveMeta();
     return entry.filePath;
   }
 
@@ -75,8 +83,10 @@ class StreamCacheService {
   }
 
   /// The file path where a new cache file for [stemId] should be written.
-  String cacheFilePath(String stemId) {
-    return '${_cacheDir.path}/$stemId.m4a';
+  String cacheFilePath(String stemId, {String? container}) {
+    final c = (container ?? '').toLowerCase();
+    final ext = c.contains('webm') || c.contains('opus') ? 'webm' : 'm4a';
+    return '${_cacheDir.path}/$stemId.$ext';
   }
 
   /// Register a completed download into the LRU index.
@@ -98,25 +108,22 @@ class StreamCacheService {
     // Evict LRU if over budget
     await _evictIfNeeded();
     await _saveMeta();
-    debugPrint('[StreamCache] cached $stemId  '
-        '${(sizeBytes / 1024 / 1024).toStringAsFixed(1)} MB  '
-        'total=${(_totalBytes() / 1024 / 1024).toStringAsFixed(0)} MB');
+    debugPrint('[StreamCache] cached $stemId ${(sizeBytes / 1024 / 1024).toStringAsFixed(1)} MB');
   }
 
   /// Downloads the audio from [url] to a local cache file in the background.
-  /// Returns the local file path on success, null on failure.
-  /// This runs silently — it doesn't block playback.
+  /// Runs with reduced concurrency (2 workers) to prevent competing with active playback (Point 9).
   Future<String?> backgroundCacheStream({
     required String stemId,
     required String url,
     String? userAgent,
+    String? container,
   }) async {
     // Don't re-download if already cached
-    if (_entries.containsKey(stemId) && File(_entries[stemId]!.filePath).existsSync()) {
-      return _entries[stemId]!.filePath;
-    }
+    final existing = getCachedPath(stemId);
+    if (existing != null) return existing;
 
-    final filePath = cacheFilePath(stemId);
+    final filePath = cacheFilePath(stemId, container: container);
     final tmpPath = '$filePath.tmp';
 
     try {
@@ -124,7 +131,7 @@ class StreamCacheService {
         url: url,
         destinationPath: tmpPath,
         userAgent: userAgent,
-        concurrency: 3,
+        concurrency: 2, // Controlled concurrency to prevent playback starvation
         chunkSize: 1024 * 1024,
       );
 
@@ -135,19 +142,16 @@ class StreamCacheService {
       return filePath;
     } catch (e) {
       debugPrint('[StreamCache] bg-cache error for $stemId: $e');
-      // Clean up partial file
-      try { File(tmpPath).deleteSync(); } catch (_) {}
+      try {
+        File(tmpPath).deleteSync();
+      } catch (_) {}
       return null;
     }
   }
 
-  /// Total bytes currently in cache.
   int get totalCacheBytes => _totalBytes();
-
-  /// Number of cached tracks.
   int get entryCount => _entries.length;
 
-  /// Clears the entire stream cache (all files + metadata).
   Future<void> clearCache() async {
     for (final entry in _entries.values.toList()) {
       try {
@@ -160,16 +164,13 @@ class StreamCacheService {
     debugPrint('[StreamCache] Cache cleared');
   }
 
-  // ───────────────── internals ───────────────────
-
-  int _totalBytes() =>
-      _entries.values.fold<int>(0, (sum, e) => sum + e.sizeBytes);
+  int _totalBytes() => _entries.values.fold<int>(0, (sum, e) => sum + e.sizeBytes);
 
   Future<void> _evictIfNeeded() async {
     while (_totalBytes() > maxCacheBytes && _entries.isNotEmpty) {
-      // Find oldest entry
       final oldest = _entries.values.reduce(
-          (a, b) => a.lastPlayedAt.isBefore(b.lastPlayedAt) ? a : b);
+        (a, b) => a.lastPlayedAt.isBefore(b.lastPlayedAt) ? a : b,
+      );
       try {
         File(oldest.filePath).deleteSync();
       } catch (_) {}
@@ -202,27 +203,32 @@ class StreamCacheService {
   }
 }
 
-// ─────────────────── CacheEntry model ───────────────────
-
 class CacheEntry {
   final String stemId;
   final String filePath;
   final int sizeBytes;
   final DateTime lastPlayedAt;
 
-  const CacheEntry({
+  CacheEntry({
     required this.stemId,
     required this.filePath,
     required this.sizeBytes,
     required this.lastPlayedAt,
   });
 
-  CacheEntry copyWith({DateTime? lastPlayedAt}) => CacheEntry(
-        stemId: stemId,
-        filePath: filePath,
-        sizeBytes: sizeBytes,
-        lastPlayedAt: lastPlayedAt ?? this.lastPlayedAt,
-      );
+  CacheEntry copyWith({
+    String? stemId,
+    String? filePath,
+    int? sizeBytes,
+    DateTime? lastPlayedAt,
+  }) {
+    return CacheEntry(
+      stemId: stemId ?? this.stemId,
+      filePath: filePath ?? this.filePath,
+      sizeBytes: sizeBytes ?? this.sizeBytes,
+      lastPlayedAt: lastPlayedAt ?? this.lastPlayedAt,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'stemId': stemId,
@@ -234,7 +240,7 @@ class CacheEntry {
   factory CacheEntry.fromJson(Map<String, dynamic> json) => CacheEntry(
         stemId: json['stemId'] as String,
         filePath: json['filePath'] as String,
-        sizeBytes: (json['sizeBytes'] as num).toInt(),
+        sizeBytes: json['sizeBytes'] as int,
         lastPlayedAt: DateTime.parse(json['lastPlayedAt'] as String),
       );
 }

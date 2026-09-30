@@ -127,17 +127,6 @@ class MainActivity : AudioServiceActivity() {
             }
 
             android.util.Log.i("ShrexNewPipe", "RESOLVED URL: " + best.content)
-            try {
-                val conn = java.net.URL(best.content).openConnection() as java.net.HttpURLConnection
-                conn.setRequestProperty("User-Agent", NoteNativeDownloader.USER_AGENT)
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
-                val code = conn.responseCode
-                android.util.Log.i("ShrexNewPipe", "TEST HTTP RESPONSE: $code, content-type: ${conn.contentType}, length: ${conn.contentLength}")
-                conn.disconnect()
-            } catch (e: Exception) {
-                android.util.Log.e("ShrexNewPipe", "TEST HTTP ERROR: $e")
-            }
 
             mapOf(
                 "ok" to true,

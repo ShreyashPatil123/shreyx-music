@@ -148,12 +148,14 @@ class DownloadService {
 
     try {
       final downloadDir = await _getDownloadDir();
-      final filePath = '$downloadDir/${stem.id}.m4a';
-      final file = File(filePath);
 
       // ── Step 1: Check StreamCacheService (instant copy if already auto-cached) ──
       final cachedFile = _streamCache.getCachedFile(stem.id);
       if (cachedFile != null && cachedFile.existsSync() && cachedFile.lengthSync() > 0) {
+        final ext = cachedFile.path.contains('.webm') ? 'webm' : 'm4a';
+        final filePath = '$downloadDir/${stem.id}.$ext';
+        final file = File(filePath);
+
         debugPrint('[DownloadService] ⚡ Instant copy from local cache for "${stem.title}"');
         await cachedFile.copy(filePath);
         final fileSize = file.lengthSync();
@@ -188,18 +190,21 @@ class DownloadService {
       final resolved = await _resolver.resolveStream(stem);
       if (_cancelTokens[stem.id] == true) throw Exception('Download cancelled by user');
 
+      final ext = resolved.fileExtension ?? (resolved.uri.contains('webm') ? 'webm' : 'm4a');
+      final filePath = '$downloadDir/${stem.id}.$ext';
+
       activeItem.status = 'downloading';
       activeItem.progress = 0.1;
       _progressController.add(DownloadProgress(stemId: stem.id, progress: 0.1));
 
       // ── Step 3: High-speed parallel Range download via FastDownloader ──
-      debugPrint('[DownloadService] 🚀 Starting high-speed parallel download for "${stem.title}"...');
+      debugPrint('[DownloadService] 🚀 Starting high-speed parallel download for "${stem.title}" ($ext)...');
       final receivedBytes = await FastDownloader.download(
         url: resolved.url,
         destinationPath: filePath,
         userAgent: resolved.userAgent,
-        chunkSize: 1024 * 1024, // 1MB chunks to hit unthrottled burst bandwidth
-        concurrency: 3,         // 3 parallel Range workers
+        chunkSize: 1024 * 1024,
+        concurrency: 3,
         isCancelled: () => _cancelTokens[stem.id] == true,
         onProgress: (prog, received, total) {
           activeItem.progress = prog;

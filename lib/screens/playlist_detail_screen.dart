@@ -5,6 +5,7 @@ import '../models/playlist.dart';
 import '../providers/player_provider.dart';
 import '../providers/vault_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/mini_player.dart';
 import '../widgets/track_row.dart';
 
 class PlaylistDetailScreen extends StatelessWidget {
@@ -29,7 +30,9 @@ class PlaylistDetailScreen extends StatelessWidget {
     final totalDurationStr = _formatTotalDuration(totalSec);
 
     return Scaffold(
-      body: CustomScrollView(
+      body: Stack(
+        children: [
+          CustomScrollView(
         slivers: [
           // Collapsible Header
           SliverAppBar(
@@ -201,7 +204,17 @@ class PlaylistDetailScreen extends StatelessWidget {
             ),
 
           const SliverToBoxAdapter(
-            child: SizedBox(height: 90),
+            child: SizedBox(height: 110),
+          ),
+        ],
+      ),
+          const Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              child: MiniPlayer(),
+            ),
           ),
         ],
       ),

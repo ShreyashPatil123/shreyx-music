@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/stem.dart';
+import '../services/music_search_service.dart';
 
 class SearchProvider extends ChangeNotifier {
   final YoutubeExplode _yt = YoutubeExplode();
@@ -49,6 +50,8 @@ class SearchProvider extends ChangeNotifier {
     }
   }
 
+  final MusicSearchService _musicSearch = MusicSearchService();
+
   Future<void> executeSearch(String queryText) async {
     final cleanQuery = queryText.trim();
     if (cleanQuery.isEmpty) return;
@@ -58,42 +61,20 @@ class SearchProvider extends ChangeNotifier {
     _suggestions = [];
     notifyListeners();
 
-    final List<Stem> stems = [];
-    int attempts = 0;
-    while (attempts < 2 && stems.isEmpty) {
-      attempts++;
-      try {
-        final searchList = await _yt.search.search(cleanQuery).timeout(const Duration(seconds: 10));
-        for (final video in searchList.take(25)) {
-          final durationSec = video.duration?.inSeconds ?? 0;
-          final artUrl = video.thumbnails.highResUrl.isNotEmpty
-              ? video.thumbnails.highResUrl
-              : video.thumbnails.standardResUrl;
-
-          stems.add(Stem(
-            id: 'yt_${video.id.value}',
-            title: video.title,
-            artistName: video.author,
-            artworkUrl: artUrl,
-            durationSec: durationSec,
-            sourceId: video.id.value,
-          ));
-        }
-      } catch (e) {
-        if (attempts >= 2) {
-          _error = 'Search failed. Please check internet connection.';
-        } else {
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
+    try {
+      final rankedResults = await _musicSearch.search(cleanQuery);
+      if (rankedResults.isNotEmpty) {
+        _searchResults = rankedResults;
+        _error = null;
+      } else {
+        _error = 'No music tracks found.';
       }
+    } catch (e) {
+      _error = 'Search failed. Please check internet connection.';
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-
-    if (stems.isNotEmpty) {
-      _searchResults = stems;
-      _error = null;
-    }
-    _isLoading = false;
-    notifyListeners();
   }
 
   void clearSearch() {
