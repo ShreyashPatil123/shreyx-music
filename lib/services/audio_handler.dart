@@ -5,6 +5,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
+import '../models/playlist.dart';
 import '../models/stem.dart';
 import 'audio_normalization_service.dart';
 import 'crossfade_audio_engine.dart';
@@ -13,6 +14,7 @@ import 'infinite_radio_service.dart';
 import 'playback_diagnostics_service.dart';
 import 'playback_event_pipeline.dart';
 import 'playback_queue_controller.dart';
+import 'playlist_pagination_service.dart';
 import 'stream_cache_service.dart';
 import 'track_preparation_service.dart';
 import 'vault_service.dart';
@@ -26,6 +28,9 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   Stem? _preloadedStem;
   bool _isPreloading = false;
   bool _crossfadeInProgress = false;
+  Timer? _crossfadeTimer;
+  Playlist? _activePlaylist;
+  bool _isPaginatingPlaylist = false;
 
   final TrackPreparationService _preparation = TrackPreparationService();
   final StreamCacheService _streamCache = StreamCacheService();
@@ -239,22 +244,24 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   ///
   /// Updates player state immediately to prevent frozen UI, enforces controlled
   /// fallback resolution, and implements non-blocking failure recovery.
-  Future<void> playStem(Stem stem, {List<Stem>? queue, bool preserveQueue = false}) async {
+  Future<void> playStem(Stem stem, {List<Stem>? queue, bool preserveQueue = false, Playlist? playlistContext}) async {
     final int sessionId = ++_currentSessionId;
     _bgCacheTimer?.cancel();
     _bgCacheTimer = null;
 
-    // Start diagnostics session
-    final diag = _diagnostics.startSession(
-      stemId: stem.id,
-      title: stem.title,
-      artist: stem.artistName,
-      sourceId: stem.sourceId,
-    );
-
+    // 0. STOP PREVIOUS TRACK IMMEDIATELY (Requirement 1)
+    // The moment a user explicitly taps Song B, Song A must stop immediately.
+    // Do not wait for stream resolution, fallback resolution, setUrl, buffering,
+    // or player readiness before stopping Song A.
+    _preparation.cancelActivePreparation();
     _cleanupNextPlayer();
+    try {
+      await _player.stop();
+    } catch (e) {
+      debugPrint('[AudioHandler] Error stopping previous playback: $e');
+    }
 
-    // 1. Immediately update global player UI to show song metadata and buffering
+    // 1. Immediately change active track/UI to Song B and show Preparing...
     _activeStem = stem;
     _activeStemController.add(stem);
     _pushMediaItem(stem);
@@ -275,6 +282,14 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       queueIndex: _queueController.currentIndex,
     ));
 
+    // Start diagnostics session
+    final diag = _diagnostics.startSession(
+      stemId: stem.id,
+      title: stem.title,
+      artist: stem.artistName,
+      sourceId: stem.sourceId,
+    );
+
     // 2. Queue management via PlaybackQueueController
     if (queue != null && queue.isNotEmpty) {
       _queueController.setQueue(queue, initialStem: stem);
@@ -284,13 +299,23 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       }
     }
 
+    // 2b. Track active playlist context for auto-pagination
+    if (playlistContext != null) {
+      _activePlaylist = playlistContext;
+    } else if (stem.playlistId != null) {
+      try {
+        _activePlaylist = VaultService().playlists.firstWhere((p) => p.id == stem.playlistId);
+      } catch (_) {}
+    } else if (!preserveQueue) {
+      _activePlaylist = null;
+    }
+
     _queueController.updateActiveTrackState(TrackPlaybackState.preparing);
 
-    // 3. Resolve and prepare stream
+    // 3. Resolve and prepare stream (Only after previous song has been stopped)
     try {
       if (stem.isLocal && stem.localFilePath != null) {
         if (sessionId != _currentSessionId) return;
-        await _player.stop();
         await _player.setFilePath(stem.localFilePath!);
       } else {
         // Check disk LRU cache first
@@ -299,7 +324,6 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
           debugPrint('[AudioHandler] ⚡ Disk cache hit for "${stem.title}"');
           if (sessionId != _currentSessionId) return;
           _diagnostics.markStreamSelected(diag.sessionId, resolver: 'disk_cache', wasCached: true);
-          await _player.stop();
           await _player.setFilePath(cachedPath);
         } else {
           // Resolve stream URL using TrackPreparationService with controlled fallback
@@ -308,7 +332,11 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
             diagnosticsSessionId: diag.sessionId,
           );
 
-          if (sessionId != _currentSessionId) return;
+          // Stale check: Discard if user tapped another track during async resolution
+          if (sessionId != _currentSessionId) {
+            debugPrint('[AudioHandler] 🛑 Discarding stale resolved stream for "${stem.title}"');
+            return;
+          }
 
           Stem? effectiveStem = prepared.effectiveStem;
           if (effectiveStem != null) {
@@ -321,12 +349,15 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
           final headers = prepared.userAgent != null ? {'User-Agent': prepared.userAgent!} : null;
 
           _diagnostics.markPlayerSetUrlStart(diag.sessionId);
-          await _player.stop();
           await _player.setUrl(prepared.uri, headers: headers);
         }
       }
 
-      if (sessionId != _currentSessionId) return;
+      // Stale check: Verify session ID before playing
+      if (sessionId != _currentSessionId) {
+        debugPrint('[AudioHandler] 🛑 Discarding stale playback start for "${stem.title}"');
+        return;
+      }
 
       _queueController.updateActiveTrackState(TrackPlaybackState.playing);
       await _player.setVolume(1.0);
@@ -335,6 +366,12 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       VaultService().recordPlay(_activeStem ?? stem);
       PlaybackEventPipeline().onPlayStarted(_activeStem ?? stem, sessionId: diag.sessionId);
     } catch (e) {
+      // If superseded or cancelled, safely discard without marking error or advancing
+      if (sessionId != _currentSessionId || e is CancellationException) {
+        debugPrint('[AudioHandler] Cancelled/superseded track switch for "${stem.title}"');
+        return;
+      }
+
       debugPrint('[AudioHandler] Playback error on "${stem.title}": $e');
 
       // Purge invalid/403 stream from cache immediately (Safeguard 2)
@@ -343,7 +380,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
 
       if (sessionId != _currentSessionId) return;
 
-      // Non-blocking failure recovery (Point 13 & Safeguard 3):
+      // Non-blocking failure recovery:
       // Mark current track failed, keep queue intact, and advance to next track
       final nextItem = _queueController.handleCurrentTrackFailure(e.toString());
       if (nextItem != null) {
@@ -357,6 +394,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       }
     }
   }
+
 
   int _getNextTrackIndex() => _queueController.getNextIndex();
 
@@ -387,6 +425,9 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   void _cleanupNextPlayer() {
+    _crossfadeTimer?.cancel();
+    _crossfadeTimer = null;
+    _crossfadeInProgress = false;
     try {
       _nextPlayer?.stop();
       _nextPlayer?.dispose();
@@ -424,10 +465,12 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       const int intervalMs = 40;
       int elapsedMs = 0;
 
-      Timer.periodic(const Duration(milliseconds: intervalMs), (timer) async {
+      _crossfadeTimer?.cancel();
+      _crossfadeTimer = Timer.periodic(const Duration(milliseconds: intervalMs), (timer) async {
         elapsedMs += intervalMs;
         if (elapsedMs >= totalMs) {
           timer.cancel();
+          _crossfadeTimer = null;
 
           _player = targetPlayer;
           _equalizer = targetEqualizer;
@@ -468,6 +511,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       skipToNext();
     }
   }
+
 
   @override
   Future<void> play() async {
@@ -573,6 +617,26 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> _maybeReplenishQueue() async {
     if (_queueController.stems.isNotEmpty && _queueController.currentIndex >= _queueController.stems.length - 3) {
+      // 1. If currently playing a paginated playlist with more tracks, auto-paginate first
+      if (_activePlaylist != null && _activePlaylist!.hasMore && !_isPaginatingPlaylist) {
+        _isPaginatingPlaylist = true;
+        try {
+          debugPrint('[AudioHandler] 📜 Auto-paginating active playlist "${_activePlaylist!.name}"...');
+          final newTracks = await PlaylistPaginationService().loadNextPage(_activePlaylist!);
+          if (newTracks.isNotEmpty) {
+            _queueController.appendUniqueTracks(newTracks);
+            await VaultService().updatePlaylist(_activePlaylist!);
+            debugPrint('[AudioHandler] ➕ Appended ${newTracks.length} paginated playlist tracks to queue');
+            return;
+          }
+        } catch (e) {
+          debugPrint('[AudioHandler] Error auto-paginating playlist: $e');
+        } finally {
+          _isPaginatingPlaylist = false;
+        }
+      }
+
+      // 2. Otherwise fall back to Infinite Radio
       final currentStem = _activeStem ?? _queueController.stems.last;
       try {
         final tracks = await _radio.fetchRadioTracks(currentStem.sourceId);
@@ -593,6 +657,26 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
     _isFetchingAutoplay = true;
 
     try {
+      // 1. If active playlist has more items, paginate first
+      if (_activePlaylist != null && _activePlaylist!.hasMore) {
+        try {
+          debugPrint('[AudioHandler] ⚡ Queue ended. Auto-paginating active playlist "${_activePlaylist!.name}"...');
+          final newTracks = await PlaylistPaginationService().loadNextPage(_activePlaylist!);
+          if (newTracks.isNotEmpty) {
+            _queueController.appendUniqueTracks(newTracks);
+            await VaultService().updatePlaylist(_activePlaylist!);
+            final nextItem = _queueController.advanceToNext();
+            if (nextItem != null) {
+              await playStem(nextItem.stem, preserveQueue: true, playlistContext: _activePlaylist);
+              return;
+            }
+          }
+        } catch (e) {
+          debugPrint('[AudioHandler] Error paginating active playlist at queue end: $e');
+        }
+      }
+
+      // 2. Queue ended: Fetch infinite radio recommendations
       final currentStem = _activeStem ?? (_queueController.stems.isNotEmpty ? _queueController.stems.last : null);
       if (currentStem == null) return;
 
@@ -612,7 +696,7 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       // If loopMode is ALL, explicit user request to repeat playlist
       if (_player.loopMode == LoopMode.all && _queueController.stems.isNotEmpty) {
         _queueController.setQueue(_queueController.stems, initialIndex: 0);
-        await playStem(_queueController.stems[0], preserveQueue: true);
+        await playStem(_queueController.stems[0], preserveQueue: true, playlistContext: _activePlaylist);
       } else {
         // Stop cleanly - do NOT loop to 0 (Point 16)
         debugPrint('[AudioHandler] 🏁 End of queue reached. No more playable radio tracks.');
@@ -627,6 +711,10 @@ class ShrexAudioHandler extends BaseAudioHandler with SeekHandler {
       _isFetchingAutoplay = false;
     }
   }
+
+  Playlist? get activePlaylist => _activePlaylist;
+  void setActivePlaylist(Playlist? pl) => _activePlaylist = pl;
+  void appendUniqueTracks(List<Stem> stems) => _queueController.appendUniqueTracks(stems);
 
   void setShuffled(bool enabled, {List<Stem>? originalQueue}) {
     _queueController.setShuffled(enabled);

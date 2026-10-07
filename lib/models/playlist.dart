@@ -8,6 +8,13 @@ class Playlist {
   List<Stem> stems;
   final DateTime createdAt;
 
+  // Pagination & source metadata
+  String? sourceId;
+  String? sourceType;
+  String? sourceUrl;
+  int? totalTrackCount;
+  bool hasMore;
+
   Playlist({
     required this.id,
     required this.name,
@@ -15,6 +22,11 @@ class Playlist {
     this.artworkUrl = '',
     List<Stem>? stems,
     DateTime? createdAt,
+    this.sourceId,
+    this.sourceType,
+    this.sourceUrl,
+    this.totalTrackCount,
+    this.hasMore = false,
   })  : stems = stems ?? [],
         createdAt = createdAt ?? DateTime.now();
 
@@ -25,6 +37,11 @@ class Playlist {
         'artworkUrl': artworkUrl,
         'stems': stems.map((s) => s.toJson()).toList(),
         'createdAt': createdAt.toIso8601String(),
+        'sourceId': sourceId,
+        'sourceType': sourceType,
+        'sourceUrl': sourceUrl,
+        'totalTrackCount': totalTrackCount,
+        'hasMore': hasMore,
       };
 
   factory Playlist.fromJson(Map<String, dynamic> json) {
@@ -47,9 +64,15 @@ class Playlist {
       createdAt: json['createdAt'] != null
           ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()
           : DateTime.now(),
+      sourceId: json['sourceId']?.toString(),
+      sourceType: json['sourceType']?.toString(),
+      sourceUrl: json['sourceUrl']?.toString(),
+      totalTrackCount: json['totalTrackCount'] as int?,
+      hasMore: json['hasMore'] == true,
     );
   }
 }
+
 
 class DownloadedPlaylistGroup {
   final String id;

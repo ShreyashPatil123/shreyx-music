@@ -37,6 +37,14 @@ class TrackPreparationService {
 
   PreparedTrackCache get cache => _cache;
 
+  @visibleForTesting
+  int get activeResolutionToken => _activeResolutionToken;
+
+  /// Cancels any active in-flight stream preparation by advancing the resolution token.
+  void cancelActivePreparation() {
+    _activeResolutionToken++;
+  }
+
   /// Resolves a playable [PreparedTrack] for the given [stem].
   ///
   /// Enforces controlled fallback hedging, race-condition safety, and instant cache hit reuse.

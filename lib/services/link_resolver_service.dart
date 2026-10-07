@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/playlist.dart' as app_model;
 import '../models/stem.dart';
+import 'playlist_pagination_service.dart';
 
 enum LinkResultType { track, playlist }
 
@@ -285,33 +286,15 @@ class LinkResolverService {
         final plTitle = ytPlaylist.title;
         final author = ytPlaylist.author;
         final artworkUrl = ytPlaylist.thumbnails.highResUrl;
+        final totalCount = ytPlaylist.videoCount;
 
-        final List<Stem> stems = [];
-        final videoStream = _yt.playlists.getVideos(listId);
-
-        await for (final video in videoStream.take(100)) {
-          stems.add(Stem(
-            id: 'yt_${video.id.value}',
-            title: video.title,
-            artistName: video.author,
-            artworkUrl: video.thumbnails.standardResUrl.isNotEmpty
-                ? video.thumbnails.standardResUrl
-                : video.thumbnails.highResUrl,
-            durationSec: video.duration?.inSeconds ?? 0,
-            sourceId: video.id.value,
-            albumName: plTitle,
-            playlistId: 'pl_yt_$listId',
-            playlistTitle: plTitle,
-            playlistArtwork: artworkUrl,
-          ));
-        }
-
-        final playlist = app_model.Playlist(
-          id: 'pl_yt_$listId',
-          name: plTitle,
-          description: 'Imported YouTube playlist by $author (${stems.length} tracks)',
+        final playlist = await PlaylistPaginationService().loadInitialYouTubeBatch(
+          listId: listId,
+          title: plTitle,
+          author: author,
           artworkUrl: artworkUrl,
-          stems: stems,
+          totalVideoCount: totalCount,
+          initialPageSize: 50,
         );
 
         return ResolvedLinkResult.playlist(playlist, originalUrl: url);

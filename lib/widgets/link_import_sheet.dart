@@ -126,11 +126,7 @@ class _LinkImportSheetState extends State<LinkImportSheet> {
       }
     } else if (_result!.type == LinkResultType.playlist && _result!.playlist != null) {
       final pl = _result!.playlist!;
-      await vault.createPlaylist(
-        pl.name,
-        description: pl.description,
-        stems: pl.stems,
-      );
+      await vault.saveImportedPlaylist(pl);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

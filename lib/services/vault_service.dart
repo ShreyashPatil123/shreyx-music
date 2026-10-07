@@ -135,6 +135,27 @@ class VaultService {
     if (idx != -1) {
       _playlists[idx].stems.removeWhere((s) => s.id == stemId);
       await _savePlaylists();
+      onVaultChanged?.call();
+    }
+  }
+
+  Future<void> saveImportedPlaylist(Playlist playlist) async {
+    final idx = _playlists.indexWhere((p) => p.id == playlist.id);
+    if (idx != -1) {
+      _playlists[idx] = playlist;
+    } else {
+      _playlists.add(playlist);
+    }
+    await _savePlaylists();
+    onVaultChanged?.call();
+  }
+
+  Future<void> updatePlaylist(Playlist playlist) async {
+    final idx = _playlists.indexWhere((p) => p.id == playlist.id);
+    if (idx != -1) {
+      _playlists[idx] = playlist;
+      await _savePlaylists();
+      onVaultChanged?.call();
     }
   }
 

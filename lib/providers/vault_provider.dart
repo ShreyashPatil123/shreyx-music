@@ -59,6 +59,16 @@ class VaultProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> saveImportedPlaylist(Playlist playlist) async {
+    await _vaultService.saveImportedPlaylist(playlist);
+    notifyListeners();
+  }
+
+  Future<void> updatePlaylist(Playlist playlist) async {
+    await _vaultService.updatePlaylist(playlist);
+    notifyListeners();
+  }
+
   bool isDownloaded(String stemId) => _downloadService.isDownloaded(stemId);
   bool isDownloading(String stemId) => _downloadService.isDownloading(stemId);
   bool isPlaylistDownloading(String playlistId) =>

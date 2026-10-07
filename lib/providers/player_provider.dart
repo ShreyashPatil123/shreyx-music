@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart';
 import '../models/lyric_line.dart';
+import '../models/playlist.dart';
 import '../models/stem.dart';
 import '../services/audio_handler.dart';
 import '../services/infinite_radio_service.dart';
@@ -156,14 +157,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  Future<void> playStem(Stem stem, {List<Stem>? queue}) async {
+  Future<void> playStem(Stem stem, {List<Stem>? queue, Playlist? playlistContext}) async {
     _position = Duration.zero;
     _duration = Duration(seconds: stem.durationSec);
     _isBuffering = true;
     _activeStem = stem;
     notifyListeners();
     try {
-      await _audioHandler.playStem(stem, queue: queue);
+      await _audioHandler.playStem(stem, queue: queue, playlistContext: playlistContext);
     } catch (e) {
       debugPrint('[PlayerProvider] playStem error: $e');
       _isBuffering = false;
@@ -247,13 +248,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _audioHandler.skipToPrevious();
   }
 
-  Future<void> shufflePlay(List<Stem> stems) async {
+  Future<void> shufflePlay(List<Stem> stems, {Playlist? playlistContext}) async {
     if (stems.isEmpty) return;
     _isShuffled = true;
     final shuffled = List<Stem>.from(stems)..shuffle();
     final firstStem = shuffled.first;
     _audioHandler.setShuffled(true, originalQueue: stems);
-    await playStem(firstStem, queue: shuffled);
+    await playStem(firstStem, queue: shuffled, playlistContext: playlistContext);
+    notifyListeners();
+  }
+
+  void appendTracksToQueue(List<Stem> stems) {
+    _audioHandler.appendUniqueTracks(stems);
     notifyListeners();
   }
 
